@@ -57,6 +57,7 @@ import app.privateinbox.ui.common.Pill
 import app.privateinbox.ui.common.SubScreen
 import app.privateinbox.ui.common.categoryColor
 import app.privateinbox.ui.compose.MessageComposer
+import app.privateinbox.ui.compose.ScheduledStrip
 import kotlinx.coroutines.launch
 
 @Composable
@@ -81,13 +82,14 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
     val address = c?.address
     val dialable = address?.let(Dialer::normalize)
     val canReply = address != null && AddressNormalizer.isPhoneNumber(address)
+    val isGroup = c?.isGroup == true
 
     SubScreen(
         title = c?.displayName ?: address ?: "Conversation",
         onBack = onBack,
         actions = {
             // Opens the system dialer pre-filled (ACTION_DIAL). We never place calls ourselves.
-            IconButton(enabled = dialable != null, onClick = { dialable?.let { Dialer.openDialer(context, it) } }) {
+            IconButton(enabled = dialable != null && !isGroup, onClick = { dialable?.let { Dialer.openDialer(context, it) } }) {
                 Icon(Icons.Outlined.Call, contentDescription = "Open in dialer")
             }
             IconButton(onClick = { menu = true }) { Icon(Icons.Outlined.MoreVert, contentDescription = "More") }
@@ -99,7 +101,7 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
                 if (c != null) {
                     DropdownMenuItem(text = { Text(if (c.muted) "Unmute" else "Mute notifications") }, onClick = { act { container.messages.setMuted(c.id, !c.muted) } })
                     DropdownMenuItem(text = { Text("Move to category…") }, onClick = { menu = false; moveMenu = true })
-                    DropdownMenuItem(text = { Text("Block sender") }, onClick = { act { container.messages.block(c.id); onBack() } })
+                    if (!c.isGroup) DropdownMenuItem(text = { Text("Block sender") }, onClick = { act { container.messages.block(c.id); onBack() } })
                     DropdownMenuItem(text = { Text("Delete conversation") }, onClick = { act { container.messages.deleteConversation(c.id); onBack() } })
                 }
             }
@@ -124,8 +126,12 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
             ) {
                 items(msgs, key = { it.id }) { m -> Bubble(m) }
             }
-            if (canReply) {
-                MessageComposer(recipient = { address })
+            ScheduledStrip(conversationId)
+            if (c != null && c.isGroup) {
+                val members = c.members.split('\n').filter { it.isNotBlank() }
+                MessageComposer(recipients = { members })
+            } else if (canReply) {
+                MessageComposer(recipients = { listOfNotNull(address) })
             } else {
                 Text(
                     "This sender doesn't accept replies.",

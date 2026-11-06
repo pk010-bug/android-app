@@ -1,5 +1,6 @@
 package app.privateinbox.data.db
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -30,6 +31,10 @@ data class ConversationEntity(
     val muted: Boolean = false,
     /** Highest scam score among recent incoming messages (0-100). */
     val scamScore: Int = 0,
+    /** User-created group: SMS is sent to each member individually (no MMS group yet). */
+    @ColumnInfo(defaultValue = "0") val isGroup: Boolean = false,
+    /** Newline-separated member addresses for groups; empty for 1:1. */
+    @ColumnInfo(defaultValue = "") val members: String = "",
 )
 
 @Entity(
@@ -71,6 +76,52 @@ data class MessageEntity(
     val scamReasons: String = "",
     /** Recycle bin: non-null means soft-deleted at this time. */
     val deletedAt: Long? = null,
+    @ColumnInfo(defaultValue = "0") val isMms: Boolean = false,
+    val mmsSubject: String? = null,
+)
+
+/** One part of an MMS (image or text). Files live in noBackupFilesDir/mms, never shared storage. */
+@Entity(
+    tableName = "mms_parts",
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index("messageId")],
+)
+data class MmsPartEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val messageId: Long,
+    val mimeType: String,
+    /** File name inside the private mms directory (no paths), or null for text parts. */
+    val fileName: String? = null,
+    val text: String? = null,
+    val sizeBytes: Long = 0,
+)
+
+enum class ScheduledStatus { PENDING, SENT, FAILED, CANCELLED }
+
+/**
+ * A message the user scheduled. [authTag] is an HMAC (AndroidKeyStore key) over the exact
+ * recipients/body/time, created only when the user tapped "Schedule"; the worker refuses to
+ * send anything whose tag does not verify.
+ */
+@Entity(tableName = "scheduled_messages", indices = [Index("sendAt"), Index("status")])
+data class ScheduledMessageEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    /** Newline-separated recipients. */
+    val recipients: String,
+    val body: String,
+    val sendAt: Long,
+    val subscriptionId: Int? = null,
+    val createdAt: Long,
+    val status: ScheduledStatus = ScheduledStatus.PENDING,
+    val authTag: String = "",
+    val conversationId: Long? = null,
 )
 
 @Entity(

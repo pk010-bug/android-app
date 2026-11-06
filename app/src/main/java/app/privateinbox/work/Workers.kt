@@ -35,6 +35,15 @@ object Workers {
         )
     }
 
+    /** Re-arms scheduled sends on app start (WorkManager already survives reboot; this is belt and braces). */
+    fun reconcileScheduled(context: Context) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "scheduled-reconcile",
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<ScheduledReconcileWorker>().build(),
+        )
+    }
+
     fun importNow(context: Context) {
         WorkManager.getInstance(context).enqueueUniqueWork(
             IMPORT,
@@ -102,6 +111,14 @@ class BillReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
             }
             c.messageNotifier.showBillReminder(b.id, "Bill $whenText", b.biller)
         }
+        return Result.success()
+    }
+}
+
+class ScheduledReconcileWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result {
+        val c = (applicationContext as PrivateInboxApp).container
+        app.privateinbox.sms.ScheduledSends.reconcile(applicationContext, c.database)
         return Result.success()
     }
 }

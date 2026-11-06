@@ -14,8 +14,9 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  * The passphrase is random, wrapped by an AndroidKeyStore key (see [DatabaseKeyManager]),
  * and stored in noBackupFilesDir. The DB is also excluded from all backups.
  *
- * Schema version 1 is still pre-release, so it is edited in place. Once a build ships, every
- * change must add a Migration (no destructive fallback: this is user data).
+ * v1 shipped (0.1.0 sideload). Every schema change MUST add a Migration below; there is no
+ * destructive fallback because this is user data. Migrations are verified against the exported
+ * schemas in app/schemas (see MigrationSchemaTest).
  */
 @Database(
     entities = [
@@ -25,8 +26,10 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         RuleEntity::class,
         BillEntity::class,
         BlockedSenderEntity::class,
+        MmsPartEntity::class,
+        ScheduledMessageEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -37,6 +40,8 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
     abstract fun ruleDao(): RuleDao
     abstract fun billDao(): BillDao
     abstract fun blockedSenderDao(): BlockedSenderDao
+    abstract fun mmsPartDao(): MmsPartDao
+    abstract fun scheduledDao(): ScheduledDao
 
     companion object {
         private const val NAME = "privateinbox.db"
@@ -68,6 +73,7 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
             passphrase.fill(0)
             return Room.databaseBuilder(app, PrivateInboxDatabase::class.java, NAME)
                 .openHelperFactory(factory)
+                .addMigrations(*Migrations.ALL)
                 .build()
         }
     }

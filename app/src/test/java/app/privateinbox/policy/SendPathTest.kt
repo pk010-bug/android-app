@@ -19,11 +19,31 @@ class SendPathTest {
         assertTrue("fromSendButton() outside ui/compose: $minters", minters.isNotEmpty() && minters.all { "/ui/compose/" in it })
     }
 
-    @Test fun smsSenderOnlyUsedByComposer() {
+    @Test fun smsSenderOnlyUsedByComposerAndScheduledWorker() {
         val users = filesMentioning(Regex("""\bSmsSender\b"""))
             .map { it.invariantSeparatorsPath }
             .filterNot { it.endsWith("/sms/SmsSender.kt") }
-        assertTrue("SmsSender referenced outside ui/compose: $users", users.all { "/ui/compose/" in it })
+        assertTrue(
+            "SmsSender referenced outside ui/compose + ScheduledSendWorker: $users",
+            users.all { "/ui/compose/" in it || it.endsWith("/sms/ScheduledSendWorker.kt") },
+        )
+    }
+
+    @Test fun scheduledSendOnlyFromWorker() {
+        val users = filesMentioning(Regex("""\.sendScheduled\(""")).map { it.name }.toSet()
+        assertTrue("sendScheduled() called outside ScheduledSendWorker: $users", users == setOf("ScheduledSendWorker.kt"))
+    }
+
+    @Test fun scheduledRowsAreSignedAndVerified() {
+        val sender = TestFiles.mainSources().single { it.name == "SmsSender.kt" }.readText()
+        assertTrue("schedule() must consume a confirmation", Regex("""fun schedule\([\s\S]*?confirmation\.consume\(\)""").containsMatchIn(sender))
+        assertTrue("schedule() must sign", "authorizer.sign(" in sender)
+        assertTrue("sendScheduled() must verify", "authorizer.verify(" in sender)
+    }
+
+    @Test fun scheduledDaoInsertOnlyInSmsSender() {
+        val users = filesMentioning(Regex("""scheduledDao\(\)\.insert\(|dao\.insert\(draft""")).map { it.name }.toSet()
+        assertTrue("scheduled rows created outside SmsSender: $users", users.all { it == "SmsSender.kt" })
     }
 
     @Test fun noDirectCalls() {

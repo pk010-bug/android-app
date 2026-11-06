@@ -8,7 +8,7 @@ package app.privateinbox.navigation
 object DeepLinks {
     const val EXTRA_ROUTE = "app.privateinbox.extra.ROUTE"
 
-    private val STATIC = setOf("inbox", "finance", "alerts", "settings", "compose")
+    private val STATIC = setOf("inbox", "finance", "alerts", "settings", "compose", "scheduled")
     private val CONVERSATION = Regex("^conversation/([1-9][0-9]{0,17})$")
 
     fun validate(route: String?): String? {

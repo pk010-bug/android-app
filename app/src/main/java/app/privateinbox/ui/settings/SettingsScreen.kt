@@ -52,7 +52,7 @@ private val privacyPoints = listOf(
     "Readable rules" to "Categories come from plain regex rules you can inspect and edit.",
 )
 
-enum class SettingsDest { RULES, BLOCKED, RECYCLE, ARCHIVED, BACKUP }
+enum class SettingsDest { RULES, BLOCKED, RECYCLE, ARCHIVED, BACKUP, SCHEDULED }
 
 @Composable
 fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
@@ -133,6 +133,7 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
         }
 
         Section("Data")
+        Nav("Scheduled messages", "Review or cancel texts waiting to be sent") { onNavigate(SettingsDest.SCHEDULED) }
         Nav("Encrypted backup & restore", "Save a password-protected file you control") { onNavigate(SettingsDest.BACKUP) }
         Nav("Re-scan phone messages", "Import anything new from the system SMS store") { Workers.importNow(context) }
         Nav("Re-apply rules to all messages", null) { scope.launch { c.messages.recategorizeAll(); c.messages.rebuildFinance() } }

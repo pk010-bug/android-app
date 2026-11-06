@@ -6,6 +6,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.telephony.SmsManager
+import app.privateinbox.data.db.PrivateInboxDatabase
+import app.privateinbox.data.db.ScheduledMessageEntity
+import app.privateinbox.data.db.ScheduledStatus
 import app.privateinbox.data.repo.MessageRepository
 import app.privateinbox.security.PendingIntents
 import app.privateinbox.security.SafeLog
@@ -13,59 +16,142 @@ import app.privateinbox.security.SafeLog
 /**
  * The single place in the app that may send an SMS.
  *
- * Requires a fresh [UserSendConfirmation] (created by the composer's Send / Confirm button).
- * External intents can never reach this: [app.privateinbox.compose.IntentTriage] only produces
- * drafts. MMS sending is not implemented yet.
+ * - Immediate sends require a fresh [UserSendConfirmation] (composer Send / Confirm button).
+ * - Scheduled sends require one at *scheduling* time; the row is then sealed with a Keystore
+ *   HMAC ([ScheduledSendAuthorizer]) that the worker verifies before sending.
+ * - Groups are sent as individual SMS to each member (no group MMS).
+ * External intents can never reach this: [app.privateinbox.compose.IntentTriage] only produces drafts.
  */
 class SmsSender(
     private val context: Context,
     private val repository: MessageRepository,
+    private val db: PrivateInboxDatabase,
+    private val authorizer: ScheduledSendAuthorizer = ScheduledSendAuthorizer(),
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
 
     sealed interface Result {
         data class Queued(val messageId: Long, val conversationId: Long) : Result
+        data class Scheduled(val scheduledId: Long, val conversationId: Long) : Result
         data class Refused(val reason: String) : Result
     }
 
+    enum class ScheduledOutcome { SENT, FAILED, REJECTED, ALREADY_HANDLED, TOO_EARLY, MISSED }
+
     suspend fun send(
         confirmation: UserSendConfirmation,
-        recipient: String,
+        recipients: List<String>,
         body: String,
         subscriptionId: Int? = null,
     ): Result {
         if (!confirmation.consume()) return Result.Refused("send must be confirmed by a tap")
+        val clean = validate(recipients, body)?.let { return it } ?: cleanRecipients(recipients)
+        return dispatch(clean, body, subscriptionId)
+    }
+
+    suspend fun schedule(
+        confirmation: UserSendConfirmation,
+        recipients: List<String>,
+        body: String,
+        sendAt: Long,
+        subscriptionId: Int? = null,
+    ): Result {
+        if (!confirmation.consume()) return Result.Refused("scheduling must be confirmed by a tap")
+        val clean = validate(recipients, body)?.let { return it } ?: cleanRecipients(recipients)
+        val now = clock()
+        if (sendAt < now + MIN_LEAD_MS) return Result.Refused("pick a time at least a minute from now")
+        if (sendAt > now + MAX_LEAD_MS) return Result.Refused("pick a time within a year")
+        val conv = repository.conversationFor(clean)
+        val dao = db.scheduledDao()
+        val draft = ScheduledMessageEntity(
+            recipients = clean.joinToString("\n"), body = body, sendAt = sendAt,
+            subscriptionId = subscriptionId, createdAt = now, status = ScheduledStatus.PENDING,
+            conversationId = conv.id,
+        )
+        val id = dao.insert(draft)
+        dao.setTag(id, authorizer.sign(draft.copy(id = id)))
+        ScheduledSends.enqueue(context, id, sendAt, now)
+        SafeLog.i(TAG, "scheduled message for ${clean.size} recipient(s)")
+        return Result.Scheduled(id, conv.id)
+    }
+
+    /** Called only by [ScheduledSendWorker]. */
+    internal suspend fun sendScheduled(id: Long): ScheduledOutcome {
+        val dao = db.scheduledDao()
+        val row = dao.getById(id) ?: return ScheduledOutcome.ALREADY_HANDLED
+        if (row.status != ScheduledStatus.PENDING) return ScheduledOutcome.ALREADY_HANDLED
+        if (!authorizer.verify(row)) {
+            dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.FAILED)
+            SafeLog.w(TAG, "scheduled row failed integrity check; not sending")
+            return ScheduledOutcome.REJECTED
+        }
+        val now = clock()
+        if (now < row.sendAt - EARLY_SLACK_MS) return ScheduledOutcome.TOO_EARLY
+        if (now > row.sendAt + STALE_MS) {
+            // Phone was off/asleep far past the chosen time: don't surprise anyone with a stale text.
+            dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.FAILED)
+            return ScheduledOutcome.MISSED
+        }
+        // Atomic claim so a duplicate worker run can never double-send.
+        if (dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.SENT) != 1) return ScheduledOutcome.ALREADY_HANDLED
+        val recipients = row.recipients.split('\n').filter { it.isNotBlank() }
+        validate(recipients, row.body)?.let {
+            dao.setStatus(id, ScheduledStatus.FAILED)
+            return ScheduledOutcome.FAILED
+        }
+        return when (dispatch(recipients, row.body, row.subscriptionId)) {
+            is Result.Queued -> ScheduledOutcome.SENT
+            else -> { dao.setStatus(id, ScheduledStatus.FAILED); ScheduledOutcome.FAILED }
+        }
+    }
+
+    private fun cleanRecipients(recipients: List<String>) =
+        recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    private fun validate(recipients: List<String>, body: String): Result.Refused? {
+        val clean = cleanRecipients(recipients)
+        if (clean.isEmpty()) return Result.Refused("no recipient")
+        if (clean.size > MAX_RECIPIENTS) return Result.Refused("too many recipients (max $MAX_RECIPIENTS)")
+        if (clean.any { !RECIPIENT.matches(it) }) return Result.Refused("invalid recipient")
         if (body.isBlank()) return Result.Refused("empty message")
         if (body.length > MAX_BODY) return Result.Refused("message too long")
-        if (!RECIPIENT.matches(recipient.trim())) return Result.Refused("invalid recipient")
         if (context.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
             return Result.Refused("SEND_SMS not granted")
         }
-        val manager = smsManager(subscriptionId) ?: return Result.Refused("no SmsManager")
+        return null
+    }
 
-        val (messageId, conversationId) = repository.recordOutgoing(recipient.trim(), body, subscriptionId)
+    private suspend fun dispatch(recipients: List<String>, body: String, subscriptionId: Int?): Result {
+        val manager = smsManager(subscriptionId) ?: return Result.Refused("no SmsManager")
+        val record = repository.recordOutgoing(recipients, body, subscriptionId)
         val parts = manager.divideMessage(body)
-        val sent = ArrayList(
-            parts.indices.map { i ->
-                PendingIntents.broadcast(
-                    context,
-                    requestCode(messageId, i),
-                    Intent(context, SmsSentReceiver::class.java)
-                        .setAction(SmsSentReceiver.ACTION_SENT)
-                        .putExtra(SmsSentReceiver.EXTRA_MESSAGE_ID, messageId)
-                        .putExtra(SmsSentReceiver.EXTRA_PART, i)
-                        .putExtra(SmsSentReceiver.EXTRA_PART_COUNT, parts.size),
-                )
-            },
-        )
-        return try {
-            manager.sendMultipartTextMessage(recipient.trim(), null, parts, sent, null)
-            SafeLog.i(TAG, "queued sms with ${parts.size} part(s)")
-            Result.Queued(messageId, conversationId)
-        } catch (e: Exception) {
-            repository.updateSendStatus(messageId, success = false)
-            SafeLog.e(TAG, "send failed", e)
-            Result.Refused("the phone rejected the message")
+        var anyQueued = false
+        recipients.forEachIndexed { r, to ->
+            val sent = ArrayList(
+                parts.indices.map { i ->
+                    PendingIntents.broadcast(
+                        context,
+                        requestCode(record.messageId, r, i),
+                        Intent(context, SmsSentReceiver::class.java)
+                            .setAction(SmsSentReceiver.ACTION_SENT)
+                            .putExtra(SmsSentReceiver.EXTRA_MESSAGE_ID, record.messageId)
+                            .putExtra(SmsSentReceiver.EXTRA_PROVIDER_ID, record.providerIds.getOrNull(r) ?: -1L)
+                            .putExtra(SmsSentReceiver.EXTRA_PART, i)
+                            .putExtra(SmsSentReceiver.EXTRA_PART_COUNT, parts.size),
+                    )
+                },
+            )
+            try {
+                manager.sendMultipartTextMessage(to, null, parts, sent, null)
+                anyQueued = true
+            } catch (e: Exception) {
+                repository.updateSendStatus(record.messageId, success = false, providerId = record.providerIds.getOrNull(r))
+                SafeLog.e(TAG, "send failed", e)
+            }
         }
+        SafeLog.i(TAG, "queued sms: ${parts.size} part(s) x ${recipients.size} recipient(s)")
+        return if (anyQueued) Result.Queued(record.messageId, record.conversationId)
+        else Result.Refused("the phone rejected the message")
     }
 
     private fun smsManager(subscriptionId: Int?): SmsManager? =
@@ -77,10 +163,16 @@ class SmsSender(
             if (subscriptionId != null) SmsManager.getSmsManagerForSubscriptionId(subscriptionId) else SmsManager.getDefault()
         }
 
-    private companion object {
-        const val TAG = "SmsSender"
+    companion object {
+        private const val TAG = "SmsSender"
         const val MAX_BODY = 5_000
-        val RECIPIENT = Regex("^\\+?[0-9A-Za-z .()\\-]{2,32}$")
-        fun requestCode(messageId: Long, part: Int) = ((messageId * 16 + part) and 0x7FFFFFFF).toInt()
+        const val MAX_RECIPIENTS = 20
+        const val MIN_LEAD_MS = 60_000L
+        const val MAX_LEAD_MS = 366L * 24 * 3600 * 1000
+        const val EARLY_SLACK_MS = 2 * 60_000L
+        const val STALE_MS = 24L * 3600 * 1000
+        private val RECIPIENT = Regex("^\\+?[0-9A-Za-z .()\\-]{2,32}$")
+        private fun requestCode(messageId: Long, recipient: Int, part: Int) =
+            (((messageId * 32 + recipient) * 64 + part) and 0x7FFFFFFF).toInt()
     }
 }

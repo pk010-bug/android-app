@@ -13,5 +13,6 @@ class PrivateInboxApp : Application() {
     override fun onCreate() {
         super.onCreate()
         Workers.schedulePeriodic(this)
+        Workers.reconcileScheduled(this)
     }
 }

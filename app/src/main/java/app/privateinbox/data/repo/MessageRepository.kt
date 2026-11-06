@@ -116,17 +116,41 @@ class MessageRepository(
         }
     }
 
-    /** Record an outgoing SMS before handing it to the radio. */
-    suspend fun recordOutgoing(address: String, body: String, subscriptionId: Int?): Pair<Long, Long> {
+    /** What [recordOutgoing] created: one visible message, plus one provider row per recipient. */
+    data class OutgoingRecord(val messageId: Long, val conversationId: Long, val providerIds: List<Long?>)
+
+    /** Conversation for these recipients (a user group when more than one), created if needed. */
+    suspend fun conversationFor(recipients: List<String>): ConversationEntity {
+        val clean = recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { AddressNormalizer.key(it) }
+        require(clean.isNotEmpty()) { "no recipients" }
+        if (clean.size == 1) return getOrCreateConversation(AddressNormalizer.key(clean[0]), clean[0])
+        val key = groupKey(clean)
+        conversations.getByKey(key)?.let { return it }
+        val id = conversations.insert(
+            ConversationEntity(addressKey = key, address = clean.joinToString(", "), isGroup = true, members = clean.joinToString("\n")),
+        )
+        return requireNotNull(conversations.getById(id))
+    }
+
+    /** Record an outgoing SMS (1:1 or user group) before handing it to the radio. */
+    suspend fun recordOutgoing(
+        recipients: List<String>,
+        body: String,
+        subscriptionId: Int?,
+        isMms: Boolean = false,
+    ): OutgoingRecord {
         val now = clock()
-        val providerId = telephony.insertOutgoing(address, body, now, subscriptionId)
+        val clean = recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { AddressNormalizer.key(it) }
+        require(clean.isNotEmpty()) { "no recipients" }
+        // The system provider gets one row per recipient so other apps see a normal history.
+        val providerIds = if (isMms) clean.map { null } else clean.map { telephony.insertOutgoing(it, body, now, subscriptionId) }
         return db.withTransaction {
-            val conv = getOrCreateConversation(AddressNormalizer.key(address), address)
+            val conv = conversationFor(clean)
             val id = messages.insert(
                 MessageEntity(
                     conversationId = conv.id,
-                    providerId = providerId,
-                    address = address,
+                    providerId = if (clean.size == 1) providerIds[0] else null,
+                    address = clean.joinToString(", "),
                     body = body,
                     timestamp = now,
                     incoming = false,
@@ -134,12 +158,16 @@ class MessageRepository(
                     status = MessageStatus.PENDING,
                     subscriptionId = subscriptionId,
                     category = conv.categoryOverride ?: conv.category,
+                    isMms = isMms,
                 ),
             )
+            val address = if (conv.isGroup) conv.address else clean[0]
             conversations.upsert(conv.copy(address = address, lastMessagePreview = preview(body), lastMessageAt = now))
-            id to conv.id
+            OutgoingRecord(id, conv.id, providerIds)
         }
     }
+
+    suspend fun addMmsPart(part: app.privateinbox.data.db.MmsPartEntity) = db.mmsPartDao().insert(part)
 
     /** Imports an already-sent message from the provider. */
     suspend fun importOutgoing(p: TelephonyStore.ProviderSms) {
@@ -159,10 +187,15 @@ class MessageRepository(
         }
     }
 
-    suspend fun updateSendStatus(messageId: Long, success: Boolean) {
+    /**
+     * Applies a radio result. A group message is FAILED if any recipient failed: a later success
+     * from another recipient never overwrites FAILED.
+     */
+    suspend fun updateSendStatus(messageId: Long, success: Boolean, providerId: Long? = null) {
         val msg = messages.getById(messageId) ?: return
+        (providerId ?: msg.providerId)?.let { telephony.markSent(it, success) }
+        if (success && msg.status == MessageStatus.FAILED) return
         messages.updateStatus(messageId, if (success) MessageStatus.SENT else MessageStatus.FAILED, null)
-        msg.providerId?.let { telephony.markSent(it, success) }
     }
 
     suspend fun markConversationRead(conversationId: Long) {
@@ -326,6 +359,10 @@ class MessageRepository(
         private fun preview(body: String) = body.replace('\n', ' ').take(140)
 
         /** Escapes LIKE wildcards for MessageDao.search. */
+        /** Order-independent key for a user group; can never collide with a phone/alpha key. */
+        fun groupKey(members: List<String>) =
+            "group:" + members.map { AddressNormalizer.key(it) }.distinct().sorted().joinToString(",")
+
         fun escapeLike(q: String) = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     }
 }

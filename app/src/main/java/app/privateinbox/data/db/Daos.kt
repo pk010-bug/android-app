@@ -216,3 +216,52 @@ interface BlockedSenderDao {
     @Query("DELETE FROM blocked_senders WHERE addressKey = :key")
     suspend fun delete(key: String)
 }
+
+@Dao
+interface MmsPartDao {
+    @Query("SELECT * FROM mms_parts WHERE messageId = :messageId ORDER BY id")
+    suspend fun forMessage(messageId: Long): List<MmsPartEntity>
+
+    @Query("SELECT p.* FROM mms_parts p JOIN messages m ON m.id = p.messageId WHERE m.conversationId = :conversationId ORDER BY p.id")
+    fun observeForConversation(conversationId: Long): Flow<List<MmsPartEntity>>
+
+    @Query("SELECT * FROM mms_parts WHERE messageId IN (:messageIds)")
+    suspend fun forMessages(messageIds: List<Long>): List<MmsPartEntity>
+
+    @Insert
+    suspend fun insert(part: MmsPartEntity): Long
+
+    @Query("SELECT * FROM mms_parts")
+    suspend fun getAll(): List<MmsPartEntity>
+}
+
+@Dao
+interface ScheduledDao {
+    @Query("SELECT * FROM scheduled_messages WHERE status = 'PENDING' ORDER BY sendAt ASC")
+    fun observePending(): Flow<List<ScheduledMessageEntity>>
+
+    @Query("SELECT * FROM scheduled_messages WHERE status = 'PENDING' AND conversationId = :conversationId ORDER BY sendAt ASC")
+    fun observePendingFor(conversationId: Long): Flow<List<ScheduledMessageEntity>>
+
+    @Query("SELECT * FROM scheduled_messages WHERE status = 'PENDING'")
+    suspend fun getPending(): List<ScheduledMessageEntity>
+
+    @Query("SELECT * FROM scheduled_messages WHERE id = :id")
+    suspend fun getById(id: Long): ScheduledMessageEntity?
+
+    @Insert
+    suspend fun insert(row: ScheduledMessageEntity): Long
+
+    @Query("UPDATE scheduled_messages SET authTag = :tag WHERE id = :id")
+    suspend fun setTag(id: Long, tag: String)
+
+    @Query("UPDATE scheduled_messages SET status = :status WHERE id = :id")
+    suspend fun setStatus(id: Long, status: ScheduledStatus)
+
+    /** Atomic claim: returns 1 only for the single caller that moved it out of [from]. */
+    @Query("UPDATE scheduled_messages SET status = :to WHERE id = :id AND status = :from")
+    suspend fun transition(id: Long, from: ScheduledStatus, to: ScheduledStatus): Int
+
+    @Query("DELETE FROM scheduled_messages WHERE status != 'PENDING' AND sendAt < :before")
+    suspend fun deleteFinishedBefore(before: Long): Int
+}

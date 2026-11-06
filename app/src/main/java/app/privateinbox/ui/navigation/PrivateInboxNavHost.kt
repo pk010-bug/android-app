@@ -61,6 +61,7 @@ object Routes {
     const val BLOCKED = "blocked"
     const val ARCHIVED = "archived"
     const val BACKUP = "backup"
+    const val SCHEDULED = "scheduled"
     fun conversation(id: Long) = "conversation/$id"
 }
 
@@ -134,6 +135,7 @@ fun PrivateInboxNavHost(
                             SettingsDest.RECYCLE -> Routes.RECYCLE
                             SettingsDest.ARCHIVED -> Routes.ARCHIVED
                             SettingsDest.BACKUP -> Routes.BACKUP
+                            SettingsDest.SCHEDULED -> Routes.SCHEDULED
                         },
                     )
                 })
@@ -155,6 +157,7 @@ fun PrivateInboxNavHost(
             composable(Routes.BLOCKED) { BlockedScreen { navController.popBackStack() } }
             composable(Routes.ARCHIVED) { ArchivedScreen(openConversation) { navController.popBackStack() } }
             composable(Routes.BACKUP) { BackupScreen { navController.popBackStack() } }
+            composable(Routes.SCHEDULED) { app.privateinbox.ui.compose.ScheduledScreen { navController.popBackStack() } }
             composable(
                 Routes.CONVERSATION,
                 arguments = listOf(navArgument("conversationId") { type = NavType.LongType }),

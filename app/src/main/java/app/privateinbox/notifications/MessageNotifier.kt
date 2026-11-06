@@ -84,6 +84,25 @@ class MessageNotifier(private val context: Context) {
         NotificationManagerCompat.from(context).notify(TAG_BILL, id.toInt(), n)
     }
 
+    /** Content-free: says a scheduled message didn't go out; details are inside the locked app. */
+    fun showScheduledFailure(id: Long) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        ensureChannels()
+        val n = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+            .setSmallIcon(R.drawable.ic_stat_lock)
+            .setContentTitle("Scheduled message not sent")
+            .setContentText("Open PrivateInbox to review it.")
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setContentIntent(openRoute("scheduled", 8_000_000 + id.toInt()))
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(TAG_SCHEDULED, id.toInt(), n)
+    }
+
     fun cancelConversation(conversationId: Long) {
         NotificationManagerCompat.from(context).cancel(TAG_MESSAGE, conversationId.toInt())
     }
@@ -98,6 +117,7 @@ class MessageNotifier(private val context: Context) {
     )
 
     companion object {
+        private const val TAG_SCHEDULED = "scheduled"
         const val CHANNEL_MESSAGES = "messages"
         const val CHANNEL_BILLS = "bills"
         private const val TAG_MESSAGE = "msg"
