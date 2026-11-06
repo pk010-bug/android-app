@@ -29,8 +29,9 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         MmsPartEntity::class,
         ScheduledMessageEntity::class,
         PendingMmsEntity::class,
+        MmsReceiptEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)
@@ -52,12 +53,20 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
         @Volatile private var instance: PrivateInboxDatabase? = null
 
         /**
-         * Thrown (and NOT cached) when the Keystore failed transiently: nothing was deleted, and the
-         * next call tries again. The UI shows a "try again" screen; receivers leave the message in
-         * the system SMS store, which the provider import picks up later.
+         * Thrown (and NOT cached) when the Keystore failed, possibly transiently: nothing was deleted,
+         * and the next call tries again. The UI shows a "try again" screen; receivers leave the
+         * message in the system SMS store, which the provider import picks up later.
          */
         class DatabaseTemporarilyUnavailableException(cause: Throwable) :
             IllegalStateException("encrypted database temporarily unavailable", cause)
+
+        /**
+         * RB-2: thrown (and NOT cached) when the database key looks permanently lost. Nothing is
+         * deleted: the encrypted file stays on disk until the user, after reading what a reset
+         * means, confirms [resetAfterUserConfirmation]. Until then the app shows a recovery screen.
+         */
+        class DatabaseKeyLostException(cause: Throwable?) :
+            IllegalStateException("encrypted database key unavailable", cause)
 
         fun get(context: Context): PrivateInboxDatabase =
             instance ?: synchronized(this) {
@@ -69,18 +78,10 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
         private fun build(app: Context): PrivateInboxDatabase {
             System.loadLibrary("sqlcipher")
             val keys = DatabaseKeyManager(app)
-            val passphrase = passphraseWithRetry(
+            val passphrase = obtainPassphrase(
                 load = keys::getOrCreatePassphrase,
-                onPermanentLoss = { e ->
-                    // F-13: only a PERMANENT key loss (key invalidated / deleted, tag mismatch,
-                    // corrupt wrapped file; e.g. after a credential reset or restore to a new phone)
-                    // wipes. The encrypted DB is unrecoverable then; the system SMS provider remains
-                    // the source of truth for messages, so start a fresh encrypted cache.
-                    SafeLog.e(TAG, "database key permanently lost, resetting local cache", e)
-                    app.deleteDatabase(NAME)
-                    keys.destroy()
-                    keys.getOrCreatePassphrase()
-                },
+                wrappedKeyExists = keys.hasWrappedKey(),
+                databaseExists = app.getDatabasePath(NAME).exists(),
             )
             // Hand SQLCipher its own copy of the key and wipe ours.
             val factory = SupportOpenHelperFactory(passphrase.copyOf())
@@ -92,13 +93,42 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
         }
 
         /**
-         * Pure retry policy (unit-tested): transient failures are retried [ATTEMPTS] times with a
-         * short backoff and then surface as [DatabaseTemporarilyUnavailableException]; only
-         * [DatabaseKeyManager.KeyUnavailableException] reaches [onPermanentLoss].
+         * RB-2: the ONLY code path that deletes the encrypted database (and its wrapped key). Called
+         * from the recovery screen after the user explicitly confirmed (and re-authenticated where
+         * a screen lock exists). Messages stay in the system SMS store; local-only data (rules,
+         * categories, recycle bin, scheduled messages, finance entries) is lost.
+         */
+        fun resetAfterUserConfirmation(context: Context) = synchronized(this) {
+            val app = context.applicationContext
+            runCatching { instance?.close() }
+            instance = null
+            app.deleteDatabase(NAME)
+            DatabaseKeyManager(app).destroy()
+            SafeLog.w(TAG, "encrypted local cache reset by the user")
+        }
+
+        /**
+         * Pure (unit-tested). A database file without its wrapped key can never be opened again, and
+         * creating a new key would only hide that, so it is reported as a lost key instead.
+         */
+        internal fun obtainPassphrase(
+            load: () -> ByteArray,
+            wrappedKeyExists: Boolean,
+            databaseExists: Boolean,
+            sleep: (Long) -> Unit = Thread::sleep,
+            log: (String) -> Unit = { SafeLog.w(TAG, it) },
+        ): ByteArray {
+            if (databaseExists && !wrappedKeyExists) throw DatabaseKeyLostException(null)
+            return passphraseWithRetry(load, sleep, log)
+        }
+
+        /**
+         * Pure retry policy (unit-tested): possibly-transient failures are retried [ATTEMPTS] times
+         * with a short backoff and then surface as [DatabaseTemporarilyUnavailableException]; a
+         * definite loss surfaces as [DatabaseKeyLostException]. Neither deletes anything.
          */
         internal fun passphraseWithRetry(
             load: () -> ByteArray,
-            onPermanentLoss: (DatabaseKeyManager.KeyUnavailableException) -> ByteArray,
             sleep: (Long) -> Unit = Thread::sleep,
             log: (String) -> Unit = { SafeLog.w(TAG, it) },
         ): ByteArray {
@@ -107,7 +137,8 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
                 try {
                     return load()
                 } catch (e: DatabaseKeyManager.KeyUnavailableException) {
-                    return onPermanentLoss(e)
+                    log("database key unavailable; waiting for the user to decide")
+                    throw DatabaseKeyLostException(e)
                 } catch (e: DatabaseKeyManager.KeyTemporarilyUnavailableException) {
                     last = e
                     log("database key temporarily unavailable (attempt ${attempt + 1})")

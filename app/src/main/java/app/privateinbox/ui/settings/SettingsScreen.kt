@@ -73,7 +73,6 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
     val widgetNames by s.widgetShowNames.collectAsState(initial = false)
     val hideLock by s.hideOnLockScreen.collectAsState(initial = true)
     val contentFree by s.contentFreeWhenLocked.collectAsState(initial = true)
-    val autoMms by s.autoDownloadMmsFromContacts.collectAsState(initial = true)
     val days by s.recycleBinDays.collectAsState(initial = 30)
     val theme by s.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
     var isDefault by remember { mutableStateOf(DefaultSmsApp.isDefault(context)) }
@@ -127,15 +126,31 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
                     leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
                 )
             }
-            val rootSignals = r.signals.filter { it.category == IntegrityCategory.ROOT }.toSet()
-            val rootKey = r.key(rootSignals)
-            if (rootSignals.isNotEmpty() && rootDismissed != null && rootDismissed != rootKey) {
+            // HB-2: root and unconfirmed hints are information only (never a lock), dismissible per signal set.
+            val info = r.informationalSignals
+            val rooted = info.any { it.category == IntegrityCategory.ROOT }
+            val unconfirmed = info.any { it.category != IntegrityCategory.ROOT }
+            val rootKey = r.key(info)
+            if (info.isNotEmpty() && rootDismissed != null && rootDismissed != rootKey) {
                 ListItem(
-                    headlineContent = { Text("This phone appears to be rooted") },
+                    headlineContent = { Text(if (rooted) "This phone appears to be rooted" else "Possible inspection tool (unconfirmed)") },
                     supportingContent = {
                         Text(
-                            "That's fine, and PrivateInbox works normally. Just note that apps granted root access can read " +
-                                "any app's data, including your messages. Only grant root to apps you trust.",
+                            buildString {
+                                if (rooted) {
+                                    append(
+                                        "That's fine, and PrivateInbox works normally. Just note that apps granted root access can read " +
+                                            "any app's data, including your messages. Only grant root to apps you trust.",
+                                    )
+                                }
+                                if (unconfirmed) {
+                                    if (rooted) append(" ")
+                                    append(
+                                        "A weak sign of a debugging or inspection tool was seen, but nothing confirms it; it can " +
+                                            "have harmless causes, so PrivateInbox does not lock for it.",
+                                    )
+                                }
+                            },
                         )
                     },
                     trailingContent = { TextButton(onClick = { scope.launch { s.setRootNoticeDismissedSignals(rootKey) } }) { Text("Dismiss") } },
@@ -183,12 +198,6 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
             // Showing contact names on the home screen is a privacy downgrade: needs a fresh authentication.
             if (on) reauth("Show names on the home-screen widget", apply) else apply()
         }
-
-        Toggle(
-            "Auto-download MMS from contacts",
-            "Picture messages from contacts and people you've texted download when they arrive. Unknown senders always need a tap (with a warning); blocked senders are never downloaded.",
-            autoMms,
-        ) { scope.launch { s.setAutoDownloadMmsFromContacts(it) } }
 
         Section("Inbox")
         Nav("Smart inbox rules", "See and edit how messages are sorted") { onNavigate(SettingsDest.RULES) }

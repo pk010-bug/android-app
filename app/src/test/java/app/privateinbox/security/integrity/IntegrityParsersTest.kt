@@ -36,6 +36,7 @@ class IntegrityParsersTest {
             "7c00000000-7c00100000 r--p 00000000 fd:05 9 /system/framework/XposedBridge.jar",
             "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /data/adb/modules/zygisk_lsposed/lib/arm64/liblspd.so",
             "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /system/lib64/libriru_edxp.so",
+            "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /data/adb/modules/edxp/lib64/libedxp.so",
         ).forEach { line ->
             val hits = IntegrityParsers.scanMaps(cleanMaps + "\n" + line)
             assertTrue(line, hits.xposed)
@@ -51,9 +52,29 @@ class IntegrityParsersTest {
     @Test fun fridaThreadNames() {
         assertFalse(IntegrityParsers.hasFridaThread(listOf("main\n", "RenderThread\n", "Signal Catcher\n", "HeapTaskDaemon\n")))
         assertTrue(IntegrityParsers.hasFridaThread(listOf("main\n", "gum-js-loop\n")))
-        assertTrue(IntegrityParsers.hasFridaThread(listOf("gmain\n")))
         assertTrue(IntegrityParsers.hasFridaThread(listOf("pool-frida-12\n")))
-        assertTrue(IntegrityParsers.hasFridaThread(listOf("GDBUS")))
+        assertTrue(IntegrityParsers.hasFridaThread(listOf("frida-main-loop")))
+        // HB-2: generic GLib threads are not Frida-specific.
+        assertFalse(IntegrityParsers.hasFridaThread(listOf("gmain\n")))
+        assertFalse(IntegrityParsers.hasFridaThread(listOf("GDBUS")))
+        assertTrue(IntegrityParsers.hasGlibThread(listOf("gmain\n")))
+        assertTrue(IntegrityParsers.hasGlibThread(listOf("GDBUS")))
+        assertFalse(IntegrityParsers.hasGlibThread(listOf("main", "gum-js-loop")))
+    }
+
+    @Test fun genericRiruAndZygiskAreZygoteModulesNotHooking() {
+        listOf(
+            "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /system/lib64/libriru.so",
+            "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /data/adb/riru/lib64/libriru_storage_redirect.so",
+            "7c00000000-7c00100000 r-xp 00000000 00:00 0 /memfd:libzygisk.so (deleted)",
+            "7c00000000-7c00100000 r-xp 00000000 fd:05 9 /data/adb/modules/zygisk_shamiko/lib/arm64.so",
+        ).forEach { line ->
+            val hits = IntegrityParsers.scanMaps(cleanMaps + "\n" + line)
+            assertTrue(line, hits.zygoteModule)
+            assertFalse(line, hits.xposed)
+            assertFalse(line, hits.frida)
+        }
+        assertFalse(IntegrityParsers.scanMaps(cleanMaps).zygoteModule)
     }
 
     @Test fun tracerPidFromStatus() {

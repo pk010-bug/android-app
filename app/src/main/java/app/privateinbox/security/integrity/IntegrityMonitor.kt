@@ -25,6 +25,9 @@ class IntegrityMonitor internal constructor(private val checker: IntegrityChecke
     private val _latest = MutableStateFlow<IntegrityReport?>(null)
     val latest: StateFlow<IntegrityReport?> = _latest.asStateFlow()
 
+    /** HB-1: process-wide integrity re-lock state (survives Activity recreation). */
+    val lockGate = IntegrityLockGate()
+
     suspend fun refresh(force: Boolean = false): IntegrityReport = withContext(Dispatchers.IO) {
         mutex.withLock {
             val now = SystemClock.elapsedRealtime()

@@ -44,6 +44,8 @@ class NoNetworkPolicyTest {
         assertFalse("WAP push receiver must not download", ".download(" in receiver)
         val container = src("AppContainer.kt")
         assertTrue(container.contains("MmsPolicy.decide") || container.contains("mmsDownloadDecision(messageId)"))
+        val receive = container.substringAfter("suspend fun receiveMmsNotification").substringBefore("suspend fun mmsDownloadDecision")
+        assertFalse("RB-1: receipt never downloads", receive.contains(".download(") || receive.contains("startMmsDownload("))
         assertTrue("startMmsDownload re-checks the policy", Regex("""fun startMmsDownload[\s\S]{0,200}mmsDownloadDecision\(messageId\)""").containsMatchIn(container))
     }
 }

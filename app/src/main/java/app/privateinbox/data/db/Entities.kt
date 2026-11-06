@@ -103,14 +103,18 @@ data class MmsPartEntity(
     val sizeBytes: Long = 0,
 )
 
-/** Download state of an MMS whose notification arrived but whose content was not fetched yet. */
-enum class PendingMmsState { WAITING, DOWNLOADING, FAILED }
+/**
+ * Download state of an MMS whose notification arrived but whose content was not fetched yet.
+ * COMPLETING (stored as text, so no schema change): a downloaded PDU is being turned into the real
+ * message; it lets exactly one completion callback win (HB-3).
+ */
+enum class PendingMmsState { WAITING, DOWNLOADING, FAILED, COMPLETING }
 
 /**
  * F-04: an incoming MMS notification (M-Notification.ind) that has NOT been downloaded. MMS content
- * is fetched when the user taps Download on the placeholder message [messageId], or on arrival for
- * contacts if "Auto-download MMS from contacts" is on; never for blocked senders, and only after a
- * warning for unknown senders. [contentLocation] is the sender-supplied MMSC URL; the system MMS
+ * is fetched only when the user taps Download on the placeholder message [messageId] (never
+ * automatically, from anyone); never for blocked senders, and only after a warning for unknown
+ * senders. [contentLocation] is the sender-supplied MMSC URL; the system MMS
  * service (not this app) fetches it.
  *
  * v5: [updatedAt] is when [state] last changed (a DOWNLOADING row older than
@@ -142,6 +146,20 @@ data class PendingMmsEntity(
     @androidx.room.ColumnInfo(defaultValue = "0") val updatedAt: Long = 0,
     @androidx.room.ColumnInfo(defaultValue = "0") val attempt: Int = 0,
     @androidx.room.ColumnInfo(defaultValue = "0") val deferredSent: Boolean = false,
+)
+
+/**
+ * HB-3 (v6): one row per MMS notification already handled, keyed by
+ * [app.privateinbox.mms.MmsDownloadPolicy.receiptKey] (subscription | transaction id | content
+ * location). Inserting it is the atomic "first time we see this notification" claim, done in the
+ * same transaction as the placeholder message, so duplicate or concurrent WAP pushes can never
+ * create a second placeholder or a second download. Pruned after
+ * [app.privateinbox.mms.MmsDownloadPolicy.RECEIPT_RETENTION_MS].
+ */
+@Entity(tableName = "mms_receipts")
+data class MmsReceiptEntity(
+    @PrimaryKey val dedupKey: String,
+    val createdAt: Long,
 )
 
 enum class ScheduledStatus { PENDING, SENT, FAILED, CANCELLED }

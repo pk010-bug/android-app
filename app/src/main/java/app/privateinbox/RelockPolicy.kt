@@ -11,4 +11,15 @@ object RelockPolicy {
         false -> false
         true -> awayMs >= timeoutMs
     }
+
+    /**
+     * HB-1: whether the lock screen is shown. The app-lock part ([appLockOn] and [locked]) and the
+     * integrity part ([integrityAuthRequired], process-wide, see IntegrityLockGate) are independent,
+     * so loading the app-lock preference (which may clear [locked]) can never cancel an integrity
+     * lock, whichever arrives first. An integrity lock is only enforced while the phone can
+     * authenticate ([canAuthenticate]); otherwise the user would be locked out with no way in
+     * (documented fail-open, HB-4), and the warning dialog is shown instead.
+     */
+    fun showLockScreen(appLockOn: Boolean, locked: Boolean, integrityAuthRequired: Boolean, canAuthenticate: Boolean): Boolean =
+        (appLockOn && locked) || (integrityAuthRequired && canAuthenticate)
 }

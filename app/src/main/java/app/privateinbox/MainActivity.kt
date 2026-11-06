@@ -35,7 +35,6 @@ import app.privateinbox.security.SafeLog
 import app.privateinbox.security.SecureWindow
 import app.privateinbox.security.integrity.IntegrityReport
 import app.privateinbox.security.integrity.IntegrityRisk
-import app.privateinbox.security.integrity.IntegritySignal
 import app.privateinbox.ui.lock.AppLock
 import app.privateinbox.ui.compose.Draft
 import app.privateinbox.ui.navigation.PrivateInboxNavHost
@@ -54,11 +53,16 @@ class MainActivity : FragmentActivity() {
     private val pendingDraft = mutableStateOf<Draft?>(null)
     private val pendingRoute = mutableStateOf<String?>(null)
     private val locked = mutableStateOf(true)
-    /** Set when integrity checks report high risk: shows the lock screen even if app lock is off. */
+    /**
+     * HB-1: mirrors the process-wide [app.privateinbox.security.integrity.IntegrityLockGate]: shows
+     * the lock screen even if app lock is off. Independent of [locked], so loading the app-lock
+     * preference can't clear it. Initialised in onCreate (application isn't attached yet here).
+     */
     private val integrityLock = mutableStateOf(false)
+    /** Whether the phone can authenticate right now (refreshed on create/start and on each high-risk report). */
+    private val canAuthenticate = mutableStateOf(false)
     private val integrityWarning = mutableStateOf(false)
-    /** High-risk signals the user already re-authenticated for in this process. */
-    private var acknowledgedHighRisk: Set<IntegritySignal> = emptySet()
+    private val resetError = mutableStateOf<String?>(null)
     private var backgroundedAt = 0L
 
     /**
@@ -69,13 +73,17 @@ class MainActivity : FragmentActivity() {
     @Volatile private var lockEnabledNow: Boolean? = null
     @Volatile private var lockTimeoutMsNow: Long = 30_000L
 
-    /** F-13: the encrypted database is opened off the main thread; a transient Keystore failure shows a retry screen. */
+    /**
+     * F-13 / RB-2: the encrypted database is opened off the main thread. A failure shows a retry
+     * screen (and, for a key that looks lost, a user-confirmed reset); nothing is deleted automatically.
+     */
     private val dbState = mutableStateOf<DbState>(DbState.Opening)
 
     private sealed interface DbState {
         data object Opening : DbState
         data object Ready : DbState
         data object Unavailable : DbState
+        data object KeyLost : DbState
     }
 
     private val container get() = (application as PrivateInboxApp).container
@@ -89,6 +97,9 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch { container.settings.appLockEnabled.collect { SecureWindow.setAppWide(this@MainActivity, it) } }
         if (savedInstanceState == null) handle(intent)
         lifecycleScope.launch(Dispatchers.IO) { runCatching { AttachmentImporter(applicationContext).sweep() } }
+        // HB-1: the integrity lock lives in the process-wide gate, so this can't clear it.
+        integrityLock.value = container.integrity.lockGate.authRequired
+        canAuthenticate.value = AppLock.available(this)
         lifecycleScope.launch { locked.value = container.settings.appLockEnabled.first() }
         lifecycleScope.launch { container.settings.appLockEnabled.collect { lockEnabledNow = it } }
         lifecycleScope.launch { container.settings.lockTimeoutSec.collect { lockTimeoutMsNow = it * 1000L } }
@@ -111,13 +122,21 @@ class MainActivity : FragmentActivity() {
                     Surface {
                         when {
                             lockOn == null || onboarded == null -> Unit
-                            (lockOn == true || integrityLock.value) && locked.value -> LockScreen(onUnlocked = {
-                                locked.value = false
-                                integrityLock.value = false
-                            })
+                            RelockPolicy.showLockScreen(lockOn == true, locked.value, integrityLock.value, canAuthenticate.value) ->
+                                LockScreen(onUnlocked = {
+                                    locked.value = false
+                                    container.integrity.lockGate.onUnlocked()
+                                    integrityLock.value = false
+                                })
                             dbState.value != DbState.Ready -> app.privateinbox.ui.common.DatabaseStatusScreen(
-                                unavailable = dbState.value == DbState.Unavailable,
+                                problem = when (dbState.value) {
+                                    DbState.Unavailable -> app.privateinbox.ui.common.DatabaseProblem.TEMPORARY
+                                    DbState.KeyLost -> app.privateinbox.ui.common.DatabaseProblem.KEY_LOST
+                                    else -> app.privateinbox.ui.common.DatabaseProblem.NONE
+                                },
                                 onRetry = ::openDatabase,
+                                onReset = ::resetLocalData,
+                                resetError = resetError.value,
                             )
                             onboarded == false -> OnboardingScreen(onDone = { scope.launch { settings.setOnboardingDone(true) } })
                             else -> PrivateInboxNavHost(
@@ -152,6 +171,8 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         if (backgroundedAt == 0L) return
+        canAuthenticate.value = AppLock.available(this)
+        integrityLock.value = container.integrity.lockGate.authRequired
         // F-03: synchronous, from the in-memory settings (unknown yet => treat as locked).
         if (RelockPolicy.shouldRelock(lockEnabledNow, lockTimeoutMsNow, SystemClock.elapsedRealtime() - backgroundedAt)) {
             locked.value = true
@@ -163,17 +184,54 @@ class MainActivity : FragmentActivity() {
         if (dbState.value == DbState.Ready) return
         dbState.value = DbState.Opening
         lifecycleScope.launch {
-            val ok = withContext(Dispatchers.IO) {
+            dbState.value = withContext(Dispatchers.IO) {
+                // RB-1: the v1.0.3 auto-download preference is obsolete; drop any stored value.
+                runCatching { container.settings.dropLegacyMmsAutoDownload() }
                 try {
                     container.database.openHelper.writableDatabase // opens + migrates now, off the main thread
                     runCatching { container.resetStuckMmsDownloads() } // stuck "Downloading…" becomes retryable
-                    true
-                } catch (e: app.privateinbox.data.db.PrivateInboxDatabase.Companion.DatabaseTemporarilyUnavailableException) {
-                    SafeLog.w(TAG, "database temporarily unavailable")
-                    false
+                    DbState.Ready
+                } catch (e: app.privateinbox.data.db.PrivateInboxDatabase.Companion.DatabaseKeyLostException) {
+                    SafeLog.w(TAG, "database key unavailable; waiting for the user")
+                    DbState.KeyLost
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Transient Keystore failure, or anything else: keep the file, offer retry.
+                    SafeLog.w(TAG, "database unavailable: ${e.javaClass.simpleName}")
+                    DbState.Unavailable
                 }
             }
-            dbState.value = if (ok) DbState.Ready else DbState.Unavailable
+        }
+    }
+
+    /**
+     * RB-2: the user confirmed "Reset local data" on the recovery screen. Re-verifies them (where
+     * the phone has a screen lock), then deletes the encrypted local cache and re-imports SMS from
+     * the system store. This is the only path that deletes the database.
+     */
+    private fun resetLocalData() {
+        resetError.value = null
+        AppLock.requireFreshAuth(this, "Reset PrivateInbox's local data", onError = { resetError.value = it }) {
+            lifecycleScope.launch {
+                val previous = dbState.value
+                dbState.value = DbState.Opening
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        app.privateinbox.data.db.PrivateInboxDatabase.resetAfterUserConfirmation(applicationContext)
+                        container.settings.setLastImportedProviderId(0L)
+                        container.settings.setImportDone(false)
+                    }.isSuccess
+                }
+                if (!ok) {
+                    resetError.value = "Couldn't reset. Nothing else was changed; try again."
+                    dbState.value = previous
+                    return@launch
+                }
+                dbState.value = DbState.Unavailable // let openDatabase run
+                openDatabase()
+                app.privateinbox.work.Workers.importNow(applicationContext)
+            }
         }
     }
 
@@ -192,13 +250,12 @@ class MainActivity : FragmentActivity() {
 
     private suspend fun onHighRisk(report: IntegrityReport) {
         val high = report.highRiskSignals
-        if (!acknowledgedHighRisk.containsAll(high)) {
-            acknowledgedHighRisk = acknowledgedHighRisk + high
-            if (AppLock.available(this)) {
-                integrityLock.value = true
-                locked.value = true
-            }
-        }
+        // HB-1: process-wide, once per new signal set; only when the phone can authenticate.
+        val canAuth = AppLock.available(this)
+        canAuthenticate.value = canAuth
+        val gate = container.integrity.lockGate
+        gate.onHighRisk(high, canAuth)
+        integrityLock.value = gate.authRequired
         val key = report.key(high)
         val s = container.settings
         if (s.integrityWarnedSignals.first() != key) {

@@ -41,7 +41,8 @@ class SettingsStore(private val context: Context) {
         val integrityWarned = stringPreferencesKey("integrity_warned_signals")
         val rootNoticeDismissed = stringPreferencesKey("integrity_root_notice_dismissed")
         val contentFreeWhenLocked = booleanPreferencesKey("notifications_content_free_when_locked")
-        val autoDownloadMmsContacts = booleanPreferencesKey("mms_auto_download_contacts")
+        /** RB-1: v1.0.3's "Auto-download MMS from contacts". No longer read; removed on upgrade. */
+        val obsoleteMmsAutoKey = booleanPreferencesKey("mms_auto_download_contacts")
     }
 
     private val data get() = context.dataStore.data
@@ -74,12 +75,6 @@ class SettingsStore(private val context: Context) {
      */
     val contentFreeWhenLocked: Flow<Boolean> = data.map { it[Keys.contentFreeWhenLocked] ?: true }
 
-    /**
-     * F-04, on by default: picture messages from contacts (or people you've texted) download on
-     * arrival. Unknown senders always need a tap (with a warning); blocked senders never download.
-     */
-    val autoDownloadMmsFromContacts: Flow<Boolean> = data.map { it[Keys.autoDownloadMmsContacts] ?: true }
-
     /** Signal set (names only) the one-time high-risk integrity warning was last shown for. */
     val integrityWarnedSignals: Flow<String> = data.map { it[Keys.integrityWarned] ?: "" }
 
@@ -108,7 +103,14 @@ class SettingsStore(private val context: Context) {
     suspend fun setIntegrityWarnedSignals(v: String) = put(Keys.integrityWarned, v)
     suspend fun setRootNoticeDismissedSignals(v: String) = put(Keys.rootNoticeDismissed, v)
     suspend fun setContentFreeWhenLocked(v: Boolean) = put(Keys.contentFreeWhenLocked, v)
-    suspend fun setAutoDownloadMmsFromContacts(v: Boolean) = put(Keys.autoDownloadMmsContacts, v)
+
+    /**
+     * RB-1: MMS is downloaded only on a tap, so the v1.0.3 auto-download preference is meaningless;
+     * nothing reads it any more, and this deletes a stored value (on or off) on upgrade.
+     */
+    suspend fun dropLegacyMmsAutoDownload() {
+        context.dataStore.edit { it.remove(Keys.obsoleteMmsAutoKey) }
+    }
     suspend fun setDefaultSubId(v: Int?) {
         context.dataStore.edit { if (v == null) it.remove(Keys.defaultSubId) else it[Keys.defaultSubId] = v }
     }

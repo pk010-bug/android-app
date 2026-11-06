@@ -13,7 +13,7 @@ and login codes. These rules exist so that data can never become someone else's.
 | Local storage only | Room database + DataStore in the app's private directory. |
 | Explainable categories | Plain JSON regex rules; each message stores the id of the rule that classified it. |
 | Quiet logs | Only `SafeLog` may log; it redacts numbers, sender IDs and emails. Unit tests fail on raw `Log`/`println` or on passing body/sender/code to the logger. |
-| Encrypted at rest | Room database encrypted with SQLCipher (AES-256). Random 256-bit passphrase, wrapped by an AndroidKeyStore AES-GCM key, kept in `noBackupFilesDir`. Only if the Keystore key is *permanently* lost (invalidated, deleted, or the wrapped key no longer verifies) is the local cache wiped and rebuilt from the system SMS store; a temporary Keystore error shows a "Try again" screen and deletes nothing. |
+| Encrypted at rest | Room database encrypted with SQLCipher (AES-256). Random 256-bit passphrase, wrapped by an AndroidKeyStore AES-GCM key, kept in `noBackupFilesDir`. Nothing is ever deleted automatically: a Keystore error (temporary or not) shows a "Try again" screen. Only if the key looks permanently lost does that screen also offer "Reset local data", which deletes the encrypted cache only after an explicit confirmation (and your screen lock, if set); SMS are then re-imported from the system store. |
 | Nothing sends by itself | Other apps can only prefill a draft (`sms:`, `smsto:`, `mms:`, `mmsto:`, SEND/SENDTO, share). Auto-send extras are ignored and the user is told. Sending requires a single-use confirmation created by the Send button. |
 | No direct calls | `CALL_PHONE` is not requested (and is stripped/blocked at build time). Calling opens the system dialer with `ACTION_DIAL`; you press call there. |
 | Attachments | Only `content://` from other apps. `file://` and URIs from our own FileProvider/package are refused. Images are identified by their bytes and capped at 5 MiB. A shared file is only checked when it arrives; it is copied into private storage when you tap "Attach" in the draft, and scratch copies are swept. |
@@ -47,16 +47,29 @@ uses a network constraint), no `CALL_PHONE`, no location, no account access. The
 
 MMS travels over mobile data, but PrivateInbox never opens a connection. It hands a request to
 Android's built-in MMS service (`SmsManager.downloadMultimediaMessage` / `sendMultimediaMessage`),
-which talks to your carrier. Picture messages from **contacts or people you've texted** download
-when they arrive ("Auto-download MMS from contacts", on by default; turn it off to tap for every
-MMS). From anyone else you see a "Picture message, not downloaded" placeholder and tap Download,
-after a warning for unknown senders. Blocked senders are never downloaded. The only things sent
-without a tap are protocol acknowledgements the carrier requires: "deferred" for a message left on
-the carrier's server (so it stops re-sending the notification), and "retrieved" / acknowledge after
-a download, always with read/delivery reports explicitly *refused*.
+which talks to your carrier. **No picture message is downloaded automatically, from anyone**
+(contacts included; the old "Auto-download MMS from contacts" setting was removed and any stored
+value is deleted on upgrade). Every MMS shows as a "Picture message, not downloaded" placeholder;
+it downloads only when you tap Download, after a warning for unknown senders. Blocked senders are
+never downloaded (checked when the notification arrives and again on every tap); messages over
+5 MB are refused.
+
+"No `INTERNET` permission" does **not** mean "no traffic about MMS". Without a tap, Android's MMS
+service (not PrivateInbox) sends the carrier a protocol reply when a notification arrives:
+"deferred" for a message left on the carrier's server, so it stops re-sending the notification.
+After you tap Download, the system MMS service fetches the message and sends "retrieved" /
+acknowledge. Read and delivery reports are always explicitly *refused*. These replies tell the
+carrier that the phone received the notification; that is inherent to MMS and can't be avoided
+by any default SMS app without breaking MMS. The carrier itself sees MMS notifications and
+content regardless.
 
 Runtime integrity checks (root, hooking, debugger, signing certificate) run entirely on the phone
 by reading local files and the app's own package info; they make no network request and report nothing.
+They are heuristics: root alone, Riru/Zygisk module loaders, generic GLib threads or something
+listening on port 27042 are shown as information only. Only a confirmed signing-certificate
+mismatch, a debuggable release, an attached debugger or a Frida/Xposed-specific signal re-locks
+the app (once per new set of signals, when the phone has a screen lock). They do not encrypt or
+otherwise protect data, and root with hiding tools can defeat them.
 Photos you send are re-encoded, which strips EXIF metadata such as GPS location. Received images
 are stored in app-private, no-backup storage and deleted when the message is purged.
 

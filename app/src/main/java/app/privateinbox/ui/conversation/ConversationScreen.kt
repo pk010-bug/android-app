@@ -297,7 +297,7 @@ private fun PendingMmsAction(messageId: Long, p: app.privateinbox.data.db.Pendin
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(p.state, p.updatedAt) {
         now = System.currentTimeMillis()
-        if (p.state == app.privateinbox.data.db.PendingMmsState.DOWNLOADING) {
+        if (p.state == app.privateinbox.data.db.PendingMmsState.DOWNLOADING || p.state == app.privateinbox.data.db.PendingMmsState.COMPLETING) {
             val left = p.updatedAt + app.privateinbox.mms.MmsDownloadPolicy.STUCK_AFTER_MS - now
             if (left > 0) kotlinx.coroutines.delay(left + 1_000)
             now = System.currentTimeMillis()

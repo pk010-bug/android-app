@@ -29,7 +29,13 @@ object Migrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            MigrationSql.V5_TO_V6.forEach(db::execSQL)
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
 }
 
 object MigrationSql {
@@ -70,5 +76,15 @@ object MigrationSql {
         "ALTER TABLE `pending_mms` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE `pending_mms` ADD COLUMN `attempt` INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE `pending_mms` ADD COLUMN `deferredSent` INTEGER NOT NULL DEFAULT 0",
+    )
+
+    /**
+     * DB v5 → v6 (app still 1.0.3): MMS notification receipts (HB-3). Rows still pending are back-filled with the
+     * same key format as MmsDownloadPolicy.receiptKey, so a re-sent WAP push for them is a duplicate.
+     */
+    val V5_TO_V6: List<String> = listOf(
+        "CREATE TABLE IF NOT EXISTS `mms_receipts` (`dedupKey` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`dedupKey`))",
+        "INSERT OR IGNORE INTO `mms_receipts` (`dedupKey`, `createdAt`) " +
+            "SELECT IFNULL(`subscriptionId`, -1) || '|' || `transactionId` || '|' || `contentLocation`, `createdAt` FROM `pending_mms`",
     )
 }

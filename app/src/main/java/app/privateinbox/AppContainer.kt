@@ -1,6 +1,7 @@
 package app.privateinbox
 
 import android.content.Context
+import androidx.room.withTransaction
 import app.privateinbox.data.db.PrivateInboxDatabase
 import app.privateinbox.data.prefs.SettingsStore
 import app.privateinbox.data.repo.MessageRepository
@@ -104,65 +105,46 @@ class AppContainer(private val context: Context) {
     }
 
     /**
-     * F-04: an MMS notification arrived. We store a placeholder message (so the usual blocking,
-     * categories, mute and notification rules apply) plus a pending row. Then:
-     *  - blocked sender: no pending row, never downloaded;
-     *  - known sender (contact / someone you've texted) with "Auto-download MMS from contacts" on:
-     *    downloaded right away through the same policy-checked [startMmsDownload];
-     *  - otherwise the carrier is told "deferred" (so it stops re-sending the WAP push) and the
-     *    user downloads with a tap (unknown senders after a warning).
+     * F-04 / RB-1: an MMS notification arrived. Nothing is ever downloaded here, from anyone: we
+     * store a placeholder message (so the usual blocking, categories, mute and notification rules
+     * apply) and, unless the sender is blocked or the location is unusable, a pending row the user
+     * can act on with "Download" (unknown senders after a warning). The carrier is told "deferred"
+     * (M-NotifyResp.ind, read/delivery reports refused) so it keeps the message and stops re-sending
+     * the notification; that control message is sent by the system MMS service over the carrier
+     * network, PrivateInbox itself has no network permission.
+     *
+     * HB-3: the receipt row, the placeholder and the pending row are written in ONE transaction, and
+     * the receipt's primary key (subscription | transaction id | location) makes the first writer
+     * win: duplicate or concurrent WAP pushes create nothing.
      */
     suspend fun receiveMmsNotification(pdu: app.privateinbox.mms.MmsPdu.Pdu, subscriptionId: Int?) {
-        val location = pdu.contentLocation ?: return
+        val location = pdu.contentLocation?.trim() ?: return
         val tid = pdu.transactionId?.take(100) ?: return
-        val pending = database.pendingMmsDao()
-        if (pending.existsTransaction(tid)) return // carriers re-send the same WAP push
         val from = pdu.from?.takeIf { it.isNotBlank() } ?: "Unknown sender"
         val blocked = database.blockedSenderDao().isBlockedAny(app.privateinbox.domain.AddressNormalizer.lookupKeys(from))
-        val r = messages.ingestIncoming(
-            from, MmsPolicy.placeholderBody(pdu.messageSize, blocked), System.currentTimeMillis(), subscriptionId,
-            providerId = null, isMms = true, mmsSubject = pdu.subject?.takeIf { it.isNotBlank() }?.take(80),
-        ) ?: return
-        val transport = app.privateinbox.sms.MmsTransport(context, mmsStore)
-        if (blocked || !MmsPolicy.isFetchableLocation(location)) {
-            transport.notifyDeferred(tid, subscriptionId) // never fetched; stop the re-sends
-            notifyIncoming(r, PLACEHOLDER_NOTIFICATION)
-            return
-        }
+        val downloadable = !blocked && MmsPolicy.isFetchableLocation(location)
+        val dao = database.pendingMmsDao()
         val now = System.currentTimeMillis()
-        pending.insert(
-            app.privateinbox.data.db.PendingMmsEntity(
-                messageId = r.messageId, contentLocation = location.trim(), transactionId = tid,
-                subscriptionId = subscriptionId, sizeBytes = pdu.messageSize, createdAt = now, updatedAt = now,
-            ),
-        )
-        val decision = mmsDownloadDecision(r.messageId)
-        val auto = decision != null && MmsPolicy.autoDownload(settings.autoDownloadMmsFromContacts.first(), decision)
-        if (auto && startMmsDownload(r.messageId, confirmedUnknownSender = false)) {
-            return // the downloaded message is notified when it arrives (or the failure is, see finishMmsDownload)
-        }
-        deferAndNotify(r.messageId, tid, subscriptionId, r)
-    }
-
-    private suspend fun deferAndNotify(messageId: Long, tid: String, subscriptionId: Int?, r: MessageRepository.IngestResult?) {
+        val r = database.withTransaction {
+            val receipt = app.privateinbox.data.db.MmsReceiptEntity(MmsPolicy.receiptKey(subscriptionId, tid, location), now)
+            if (dao.insertReceipt(receipt) == -1L) return@withTransaction null // duplicate notification
+            val ingested = messages.ingestIncoming(
+                from, MmsPolicy.placeholderBody(pdu.messageSize, blocked), now, subscriptionId,
+                providerId = null, isMms = true, mmsSubject = pdu.subject?.takeIf { it.isNotBlank() }?.take(80),
+            ) ?: return@withTransaction null
+            if (downloadable) {
+                dao.insert(
+                    app.privateinbox.data.db.PendingMmsEntity(
+                        messageId = ingested.messageId, contentLocation = location, transactionId = tid,
+                        subscriptionId = subscriptionId, sizeBytes = pdu.messageSize, createdAt = now, updatedAt = now,
+                    ),
+                )
+            }
+            ingested
+        } ?: return
         app.privateinbox.sms.MmsTransport(context, mmsStore).notifyDeferred(tid, subscriptionId)
-        database.pendingMmsDao().markDeferredSent(messageId)
-        if (r != null) notifyIncoming(r, PLACEHOLDER_NOTIFICATION) else notifyPlaceholder(messageId)
-    }
-
-    /** Notification for a placeholder whose auto-download failed (re-reads the message for the rules). */
-    private suspend fun notifyPlaceholder(messageId: Long) {
-        val m = database.messageDao().getById(messageId) ?: return
-        val c = database.conversationDao().getById(m.conversationId) ?: return
-        if (c.muted || c.category == Category.SPAM || !settings.notificationsEnabled.first()) return
-        val lockOn = settings.appLockEnabled.first() && settings.contentFreeWhenLocked.first()
-        messageNotifier.showMessage(
-            c.id,
-            if (lockOn) app.privateinbox.notifications.NotificationContent.CONTENT_FREE_TITLE else (c.displayName ?: c.address),
-            if (lockOn) app.privateinbox.notifications.NotificationContent.CONTENT_FREE_TEXT else PLACEHOLDER_NOTIFICATION,
-            suspicious = false,
-            hideOnLockScreen = settings.hideOnLockScreen.first(),
-        )
+        if (downloadable) dao.markDeferredSent(r.messageId)
+        notifyIncoming(r, PLACEHOLDER_NOTIFICATION)
     }
 
     /** What tapping Download on placeholder [messageId] would do, or null if nothing is pending. */
@@ -175,8 +157,8 @@ class AppContainer(private val context: Context) {
     }
 
     /**
-     * Starts a download of a pending MMS through the system MMS service (user tap, or auto-download
-     * for a known sender). Re-checks the policy (the sender may have been blocked meanwhile); an
+     * Starts the user-requested download (a tap on the placeholder; there is no automatic caller)
+     * of a pending MMS through the system MMS service. Re-checks the policy (the sender may have been blocked meanwhile); an
      * unknown sender needs [confirmedUnknownSender]. A download stuck for
      * [MmsPolicy.STUCK_AFTER_MS] can be claimed again. Returns true if the system accepted it.
      */
@@ -194,31 +176,50 @@ class AppContainer(private val context: Context) {
         return ok
     }
 
-    /** Downloads with no callback for [MmsPolicy.STUCK_AFTER_MS] become retryable (app start, periodic work). */
+    /**
+     * Downloads with no callback for [MmsPolicy.STUCK_AFTER_MS] become retryable (app start, periodic
+     * work); old notification receipts are pruned.
+     */
     suspend fun resetStuckMmsDownloads(): Int {
         val now = System.currentTimeMillis()
-        return database.pendingMmsDao().resetStuck(staleBefore = now - MmsPolicy.STUCK_AFTER_MS, now = now)
+        val dao = database.pendingMmsDao()
+        dao.pruneReceipts(before = now - MmsPolicy.RECEIPT_RETENTION_MS)
+        return dao.resetStuck(staleBefore = now - MmsPolicy.STUCK_AFTER_MS, now = now)
     }
 
     /**
      * Download attempt [attempt] for [placeholderId] finished. On success the placeholder is replaced
      * by the real message and the return value says whether the carrier was told "deferred" before
-     * (null = nothing to acknowledge, e.g. a late duplicate). On failure the row becomes retryable
-     * (only if this is still the current attempt), and an auto-download that failed is reported to
-     * the carrier as deferred and notified like any undownloaded MMS.
+     * (null = nothing to acknowledge: a late or concurrent duplicate callback). On failure the row
+     * becomes retryable (only if this is still the current attempt).
+     *
+     * HB-3: [app.privateinbox.data.db.PendingMmsDao.beginCompletion] lets exactly one callback
+     * complete a placeholder, and the real message + placeholder removal are committed in one
+     * transaction; if that fails (or the process dies) nothing is committed and the row becomes
+     * retryable.
      */
     suspend fun finishMmsDownload(placeholderId: Long, pdu: app.privateinbox.mms.MmsPdu.Pdu?, subscriptionId: Int?, attempt: Int): Boolean? {
         val dao = database.pendingMmsDao()
         val row = dao.forMessage(placeholderId) ?: return null // already replaced (late duplicate callback)
         if (pdu == null) {
             if (dao.failAttempt(placeholderId, attempt, System.currentTimeMillis()) == 1 && !row.deferredSent) {
-                deferAndNotify(placeholderId, row.transactionId, row.subscriptionId, null)
+                // Row from before v1.0.3 that the carrier never heard about: keep it on the MMSC.
+                app.privateinbox.sms.MmsTransport(context, mmsStore).notifyDeferred(row.transactionId, row.subscriptionId)
+                dao.markDeferredSent(placeholderId)
             }
             return null
         }
-        // Tapped downloads: the user is looking at it, no second notification.
-        receiveMms(pdu, subscriptionId, notify = !row.deferredSent)
-        messages.purge(listOf(placeholderId)) // cascades the pending row
+        if (dao.beginCompletion(placeholderId, System.currentTimeMillis()) != 1) return null // another callback is on it
+        try {
+            database.withTransaction {
+                // The user tapped Download and is looking at the thread: no second notification.
+                receiveMms(pdu, subscriptionId, notify = false)
+                messages.purge(listOf(placeholderId)) // cascades the pending row
+            }
+        } catch (t: Throwable) {
+            runCatching { dao.failCompletion(placeholderId, System.currentTimeMillis()) }
+            throw t
+        }
         return row.deferredSent
     }
 

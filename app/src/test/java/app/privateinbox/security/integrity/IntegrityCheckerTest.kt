@@ -170,4 +170,76 @@ class IntegrityCheckerTest {
         val r = IntegrityReport(setOf(IntegritySignal.TRACER_ATTACHED, IntegritySignal.CERT_MISMATCH), CertStatus.MISMATCH, InstallerKind.UNKNOWN, false)
         assertEquals("CERT_MISMATCH,TRACER_ATTACHED", r.key(r.highRiskSignals))
     }
+
+    private val tcpListen = "  sl  local_address rem_address st\n   0: 0100007F:69A2 00000000:0000 0A 0 0 0 0 0 1 1"
+
+    @Test fun listeningPortAloneIsNotFrida() {
+        // HB-2 false positive: something else listens on 27042.
+        val r = check(FakeEnv(files = mapOf("/proc/net/tcp" to tcpListen)))
+        assertEquals(setOf(IntegritySignal.FRIDA_PORT), r.signals)
+        assertEquals(IntegrityRisk.INFO, r.risk)
+        assertTrue(r.highRiskSignals.isEmpty())
+        assertEquals(setOf(IntegritySignal.FRIDA_PORT), r.informationalSignals)
+    }
+
+    @Test fun glibThreadsAloneAreNotFrida() {
+        val r = check(
+            FakeEnv(
+                files = mapOf("/proc/self/task/1/comm" to "main\n", "/proc/self/task/2/comm" to "gmain\n", "/proc/self/task/3/comm" to "gdbus\n"),
+                dirs = mapOf("/proc/self/task" to listOf("1", "2", "3")),
+            ),
+        )
+        assertEquals(setOf(IntegritySignal.GLIB_THREAD), r.signals)
+        assertEquals(IntegrityRisk.INFO, r.risk)
+    }
+
+    @Test fun genericRiruIsRootInformationNotHooking() {
+        val r = check(FakeEnv(files = mapOf("/proc/self/maps" to "7c00-7c01 r-xp 00000000 fd:05 9 /system/lib64/libriru.so")))
+        assertEquals(setOf(IntegritySignal.ZYGOTE_MODULE), r.signals)
+        assertEquals(setOf(IntegrityCategory.ROOT), r.categories)
+        assertEquals(IntegrityRisk.INFO, r.risk)
+    }
+
+    @Test fun weakSignalsCountWhenCorroboratedByStrongHooking() {
+        val r = check(
+            FakeEnv(
+                files = mapOf(
+                    "/proc/self/maps" to "7c00-7c01 r-xp 00000000 fd:05 9 /data/local/tmp/frida-agent-64.so",
+                    "/proc/self/task/2/comm" to "gmain\n",
+                    "/proc/net/tcp" to tcpListen,
+                ),
+                dirs = mapOf("/proc/self/task" to listOf("2")),
+            ),
+        )
+        assertEquals(setOf(IntegritySignal.FRIDA_LIBRARY, IntegritySignal.GLIB_THREAD, IntegritySignal.FRIDA_PORT), r.highRiskSignals)
+        assertEquals(IntegrityRisk.HIGH, r.risk)
+    }
+
+    @Test fun weakHintsAreNotCorroboratedByRootOrDebuggerAlone() {
+        val r = IntegrityReport(
+            setOf(IntegritySignal.FRIDA_PORT, IntegritySignal.SU_BINARY, IntegritySignal.TRACER_ATTACHED),
+            CertStatus.MATCH, InstallerKind.UNKNOWN, isDebugBuild = false,
+        )
+        assertEquals(setOf(IntegritySignal.TRACER_ATTACHED), r.highRiskSignals)
+        assertEquals(setOf(IntegritySignal.FRIDA_PORT, IntegritySignal.SU_BINARY), r.informationalSignals)
+    }
+
+    @Test fun confirmedCertMismatchAloneIsHighRisk() {
+        val r = check(FakeEnv(signingInfo = SigningInfo(listOf(attacker)), expectedCertDigests = setOf(ours)))
+        assertEquals(setOf(IntegritySignal.CERT_MISMATCH), r.highRiskSignals)
+        assertEquals(IntegrityRisk.HIGH, r.risk)
+        // Unavailable signing info is not a mismatch.
+        assertEquals(IntegrityRisk.NONE, check(FakeEnv(signingInfo = null, expectedCertDigests = setOf(ours))).risk)
+    }
+
+    @Test fun rootPlusZygoteModuleStaysInformational() {
+        val r = check(
+            FakeEnv(
+                present = setOf("/data/adb/magisk"),
+                files = mapOf("/proc/self/maps" to "7c00-7c01 r-xp 00000000 00:00 0 /memfd:libzygisk.so (deleted)"),
+            ),
+        )
+        assertEquals(setOf(IntegritySignal.ROOT_MANAGER_FILES, IntegritySignal.ZYGOTE_MODULE), r.signals)
+        assertTrue(r.highRiskSignals.isEmpty())
+    }
 }

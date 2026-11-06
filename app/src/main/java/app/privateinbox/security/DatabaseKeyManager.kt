@@ -65,7 +65,13 @@ class DatabaseKeyManager(private val context: Context) {
         return passphrase
     }
 
-    /** Destroys the passphrase and its wrapping key (makes the existing DB unreadable). */
+    /** True if a wrapped passphrase file exists (without it, an existing database can't be opened). */
+    fun hasWrappedKey(): Boolean = file.exists()
+
+    /**
+     * Destroys the passphrase and its wrapping key (makes the existing DB unreadable). Only for a
+     * user-confirmed reset (PrivateInboxDatabase.resetAfterUserConfirmation).
+     */
     @Synchronized
     fun destroy() {
         file.delete()
@@ -108,7 +114,10 @@ class DatabaseKeyManager(private val context: Context) {
         return cipher.doFinal(w.ciphertext)
     }
 
-    /** The key is permanently lost; the encrypted database is unrecoverable. */
+    /**
+     * The key looks permanently lost (corrupt wrapped file, missing or invalidated Keystore key,
+     * tag mismatch). Nothing is deleted automatically: the user decides (RB-2).
+     */
     class KeyUnavailableException(msg: String, cause: Throwable? = null) : Exception(msg, cause)
 
     /** The Keystore failed for a reason that may go away (retry; never wipe on this). */

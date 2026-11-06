@@ -54,12 +54,18 @@ internal data class SigningInfo(
 
 enum class IntegrityCategory { TAMPER, HOOK, DEBUGGER, ROOT }
 
-enum class IntegritySignal(val category: IntegrityCategory) {
+/**
+ * [weak] (HB-2): a hint that has ordinary explanations (a GLib thread, something listening on
+ * Frida's default port). Weak signals never raise the risk on their own; they only count as high
+ * risk together with a strong hooking signal.
+ */
+enum class IntegritySignal(val category: IntegrityCategory, val weak: Boolean = false) {
     CERT_MISMATCH(IntegrityCategory.TAMPER),
     DEBUGGABLE_RELEASE(IntegrityCategory.TAMPER),
     FRIDA_LIBRARY(IntegrityCategory.HOOK),
     FRIDA_THREAD(IntegrityCategory.HOOK),
-    FRIDA_PORT(IntegrityCategory.HOOK),
+    FRIDA_PORT(IntegrityCategory.HOOK, weak = true),
+    GLIB_THREAD(IntegrityCategory.HOOK, weak = true),
     XPOSED_CLASS(IntegrityCategory.HOOK),
     XPOSED_LIBRARY(IntegrityCategory.HOOK),
     HOOK_STACK_FRAME(IntegrityCategory.HOOK),
@@ -70,6 +76,9 @@ enum class IntegritySignal(val category: IntegrityCategory) {
     MAGISK_MOUNT(IntegrityCategory.ROOT),
     TEST_KEYS(IntegrityCategory.ROOT),
     SYSTEM_RW(IntegrityCategory.ROOT),
+
+    /** Riru / Zygisk module loader mapped into the process: root tooling, not proof of hooking. */
+    ZYGOTE_MODULE(IntegrityCategory.ROOT),
 }
 
 enum class CertStatus { MATCH, MISMATCH, NOT_CONFIGURED, UNAVAILABLE }
@@ -81,10 +90,14 @@ enum class IntegrityRisk {
     /** Nothing found. */
     NONE,
 
-    /** Root (or hooking/debugging in a debug build): informational only, dismissible. */
+    /** Root, an uncorroborated weak hint, or hooking/debugging in a debug build: informational only. */
     INFO,
 
-    /** Tampered package, or active hooking/debugger in a release build: re-lock + one-time warning. */
+    /**
+     * Release build with a confirmed signing-cert mismatch, a debuggable release, a strong hooking
+     * signal (Frida library/thread, Xposed-family class/library/stack frame), or an attached
+     * debugger: re-lock + one-time warning.
+     */
     HIGH,
 }
 
@@ -96,9 +109,21 @@ data class IntegrityReport(
 ) {
     val categories: Set<IntegrityCategory> get() = signals.mapTo(sortedSetOf()) { it.category }
 
-    /** Signals that make the session high risk (empty in debug builds, where debuggers are expected). */
+    /**
+     * Signals that make the session high risk (empty in debug builds, where debuggers are expected).
+     * Root never counts; weak hints count only when a strong hooking signal corroborates them.
+     */
     val highRiskSignals: Set<IntegritySignal>
-        get() = if (isDebugBuild) emptySet() else signals.filterTo(sortedSetOf()) { it.category != IntegrityCategory.ROOT }
+        get() {
+            if (isDebugBuild) return emptySet()
+            val strong = signals.filterTo(sortedSetOf()) { it.category != IntegrityCategory.ROOT && !it.weak }
+            if (strong.none { it.category == IntegrityCategory.HOOK }) return strong
+            return strong.apply { signals.filterTo(this) { it.weak && it.category == IntegrityCategory.HOOK } }
+        }
+
+    /** Everything found that is NOT high risk (root, uncorroborated hints): shown as information only. */
+    val informationalSignals: Set<IntegritySignal>
+        get() = signals.toSortedSet().apply { removeAll(highRiskSignals) }
 
     val risk: IntegrityRisk
         get() = when {
@@ -142,11 +167,14 @@ internal class IntegrityChecker(private val env: IntegrityEnv) {
             val hits = IntegrityParsers.scanMaps(maps)
             if (hits.frida) s += IntegritySignal.FRIDA_LIBRARY
             if (hits.xposed) s += IntegritySignal.XPOSED_LIBRARY
+            if (hits.zygoteModule) s += IntegritySignal.ZYGOTE_MODULE
         }
         env.list("/proc/self/task")?.let { tids ->
             val names = tids.take(MAX_THREADS).mapNotNull { env.readText("/proc/self/task/$it/comm") }
             if (IntegrityParsers.hasFridaThread(names)) s += IntegritySignal.FRIDA_THREAD
+            if (IntegrityParsers.hasGlibThread(names)) s += IntegritySignal.GLIB_THREAD
         }
+        // Weak: any app or service may listen on these ports (and Frida can use any port).
         val ports = setOf(IntegrityParsers.FRIDA_DEFAULT_PORT, IntegrityParsers.FRIDA_DEFAULT_PORT + 1)
         if (listOf("/proc/net/tcp", "/proc/net/tcp6").any { p -> env.readText(p)?.let { IntegrityParsers.listensOn(it, ports) } == true }) {
             s += IntegritySignal.FRIDA_PORT

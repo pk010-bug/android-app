@@ -254,8 +254,12 @@ interface PendingMmsDao {
     @Query("SELECT * FROM pending_mms WHERE messageId = :messageId")
     suspend fun forMessage(messageId: Long): PendingMmsEntity?
 
-    @Query("SELECT EXISTS(SELECT 1 FROM pending_mms WHERE transactionId = :transactionId)")
-    suspend fun existsTransaction(transactionId: String): Boolean
+    /** HB-3: returns -1 if this notification was already handled (the receipt exists). */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertReceipt(r: MmsReceiptEntity): Long
+
+    @Query("DELETE FROM mms_receipts WHERE createdAt < :before")
+    suspend fun pruneReceipts(before: Long): Int
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(p: PendingMmsEntity): Long
@@ -265,11 +269,13 @@ interface PendingMmsDao {
 
     /**
      * Atomically claims a WAITING/FAILED row, or a DOWNLOADING row stuck since before
-     * [staleBefore], for a new download attempt; returns 1 if this caller won.
+     * [staleBefore], for a new download attempt; returns 1 if this caller won. A COMPLETING row is
+     * re-claimable only when stale too (its completion transaction died with the process and was
+     * rolled back, so nothing was stored).
      */
     @Query(
         "UPDATE pending_mms SET state = 'DOWNLOADING', updatedAt = :now, attempt = attempt + 1 " +
-            "WHERE messageId = :messageId AND (state != 'DOWNLOADING' OR updatedAt < :staleBefore)",
+            "WHERE messageId = :messageId AND (state IN ('WAITING', 'FAILED') OR (state IN ('DOWNLOADING', 'COMPLETING') AND updatedAt < :staleBefore))",
     )
     suspend fun claim(messageId: Long, now: Long, staleBefore: Long): Int
 
@@ -280,9 +286,20 @@ interface PendingMmsDao {
     )
     suspend fun failAttempt(messageId: Long, attempt: Int, now: Long): Int
 
-    /** Startup / periodic reset: downloads with no callback since [staleBefore] become retryable. */
-    @Query("UPDATE pending_mms SET state = 'FAILED', updatedAt = :now WHERE state = 'DOWNLOADING' AND updatedAt < :staleBefore")
+    /**
+     * Startup / periodic reset: downloads with no callback (or a completion interrupted by process
+     * death, which rolled back) since [staleBefore] become retryable.
+     */
+    @Query("UPDATE pending_mms SET state = 'FAILED', updatedAt = :now WHERE state IN ('DOWNLOADING', 'COMPLETING') AND updatedAt < :staleBefore")
     suspend fun resetStuck(staleBefore: Long, now: Long): Int
+
+    /** HB-3: exactly one completion callback wins; returns 1 for the winner. */
+    @Query("UPDATE pending_mms SET state = 'COMPLETING', updatedAt = :now WHERE messageId = :messageId AND state != 'COMPLETING'")
+    suspend fun beginCompletion(messageId: Long, now: Long): Int
+
+    /** Completion failed (nothing was committed): the row becomes retryable. */
+    @Query("UPDATE pending_mms SET state = 'FAILED', updatedAt = :now WHERE messageId = :messageId AND state = 'COMPLETING'")
+    suspend fun failCompletion(messageId: Long, now: Long): Int
 
     @Query("UPDATE pending_mms SET deferredSent = 1 WHERE messageId = :messageId")
     suspend fun markDeferredSent(messageId: Long)

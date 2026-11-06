@@ -12,32 +12,49 @@ internal object IntegrityParsers {
     private val FRIDA_MAPS = listOf("frida-agent", "frida-gadget", "frida-gum", "gum-js", "libfrida", "/frida-", "linjector")
     private val XPOSED_MAPS = listOf(
         "xposedbridge", "libxposed", "xposed_art", "edxposed", "libedxp", "lspd", "liblspd", "lsposed",
-        "libriru", "riru_", "libsandhook", "libwhale", "libpine", "substrate",
+        "edxp", "libsandhook", "libwhale", "libpine", "substrate",
     )
 
-    data class MapsHits(val frida: Boolean, val xposed: Boolean)
+    /**
+     * HB-2: generic zygote-module loaders (Riru, Zygisk modules). They are injected into EVERY app
+     * process on a rooted phone with such modules installed, so they show root tooling, not that
+     * anything hooks PrivateInbox: reported as a ROOT signal (informational), never as hooking.
+     */
+    private val ZYGOTE_MODULE_MAPS = listOf("libriru", "riru_", "libzygisk", "zygisk_")
+
+    data class MapsHits(val frida: Boolean, val xposed: Boolean, val zygoteModule: Boolean = false)
 
     /** Scans /proc/self/maps for injected Frida / Xposed-family libraries (path column only). */
     fun scanMaps(maps: String): MapsHits {
         var frida = false
         var xposed = false
+        var zygote = false
         maps.lineSequence().forEach { line ->
             // "addr perms offset dev inode   path": the path is the 6th column, may be absent.
             val path = line.trim().split(Regex("\\s+"), limit = 6).getOrNull(5)?.lowercase() ?: return@forEach
             if (!frida && FRIDA_MAPS.any { it in path }) frida = true
             if (!xposed && XPOSED_MAPS.any { it in path }) xposed = true
-            if (frida && xposed) return MapsHits(true, true)
+            if (!zygote && ZYGOTE_MODULE_MAPS.any { it in path }) zygote = true
         }
-        return MapsHits(frida, xposed)
+        return MapsHits(frida, xposed, zygote)
     }
 
     // ---------- hooking: thread names (/proc/self/task/*/comm) ----------
 
-    /** GLib / Frida agent threads; none of these exist in a stock ART app process. */
-    private val FRIDA_THREADS = setOf("gum-js-loop", "gmain", "gdbus", "pool-frida", "frida-main-loop")
+    /** Frida-specific agent threads (strong signal). */
+    private val FRIDA_THREADS = setOf("gum-js-loop", "frida-main-loop")
+
+    /**
+     * HB-2: generic GLib threads. Frida's agent creates them, but so can any library built on GLib
+     * (some vendor/OEM or media components), so on their own they are only a weak hint.
+     */
+    private val GLIB_THREADS = setOf("gmain", "gdbus")
 
     fun hasFridaThread(comms: Iterable<String>): Boolean =
         comms.any { c -> val n = c.trim().lowercase(); n in FRIDA_THREADS || n.startsWith("pool-frida") || n.startsWith("frida") }
+
+    fun hasGlibThread(comms: Iterable<String>): Boolean =
+        comms.any { c -> c.trim().lowercase() in GLIB_THREADS }
 
     // ---------- debugger: /proc/self/status ----------
 

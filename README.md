@@ -29,7 +29,8 @@ categories, surfaces one-time passwords, and (soon) turns bank SMS into spending
 9. **No direct calls.** The app has no `CALL_PHONE` permission. The call button opens your phone's
    dialer with the number filled in, and you press call there.
 10. **Encrypted at rest.** The local database is encrypted with SQLCipher (AES-256). Its key is
-    random and protected by the Android Keystore.
+    random and protected by the Android Keystore. If the key can't be used, nothing is deleted
+    automatically: you get "Try again", and a reset only after you confirm it.
 11. **Careful with attachments.** Only `content://` images from other apps are accepted; they are
     checked by their actual bytes, size-limited (5 MiB), and copied into private storage right away.
 12. **OTPs stay off the lock screen.** Codes are never shown on a locked screen, copied codes are
@@ -108,8 +109,10 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 - Groups: one text to up to 20 people (individual SMS each) or one group MMS with a photo
 - Scheduled send for SMS **and MMS with a photo**: confirm once; sealed with a Keystore HMAC
   (including the exact image bytes); survives reboot; cancel from the thread or Settings
-- MMS receive: never auto-downloaded; tap Download on the placeholder (blocked senders refused, unknown
-  senders warned first). Photos, video, audio and contact cards via the system MMS service. Photos show as
+- MMS receive: never auto-downloaded, from anyone (contacts included; there is no auto-download
+  setting); tap Download on the placeholder (blocked senders refused, unknown senders warned first).
+  The system MMS service still sends the carrier its protocol replies ("deferred" on arrival,
+  acknowledge after your download) over mobile data; PrivateInbox itself has no network permission. Photos, video, audio and contact cards via the system MMS service. Photos show as
   bubbles with a FLAG_SECURE viewer; other media are never auto-opened — tap → confirm → "Open
   with…" through a short-lived, non-exported FileProvider copy
 - MMS send: one photo (+ text), re-encoded as metadata-free JPEG sized for the carrier
@@ -132,6 +135,8 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 - Incoming group MMS appear in the sender's 1:1 thread (tagged), since we don't read our own number
 - Scheduled send can be minutes late under Doze; >24h late is not sent
 - Single-signer release key; no reproducible-build verification yet
+- Root/hooking checks are local heuristics: root with hiding tools defeats them, and they don't
+  protect data cryptographically. They never block the app; without a screen lock they only warn
 
 ## License
 
