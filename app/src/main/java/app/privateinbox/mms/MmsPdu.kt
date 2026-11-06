@@ -77,7 +77,22 @@ object MmsPdu {
 
     // ------------------------------------------------------------------ parsing
 
-    fun parse(bytes: ByteArray): Pdu {
+    /**
+     * Parses an untrusted PDU. Any failure (including an unexpected runtime error or an allocation
+     * failure from a hostile length) is reported as [MalformedPdu]; nothing else escapes.
+     */
+    fun parse(bytes: ByteArray): Pdu = try {
+        parseUnchecked(bytes)
+    } catch (e: MalformedPdu) {
+        throw e
+    } catch (e: RuntimeException) {
+        throw MalformedPdu("internal: ${e.javaClass.simpleName}")
+    } catch (e: OutOfMemoryError) {
+        throw MalformedPdu("allocation refused")
+    }
+
+    /** Test hook: same parser without the safety net, so fuzz tests see real bugs. */
+    internal fun parseUnchecked(bytes: ByteArray): Pdu {
         val r = Reader(bytes)
         var type = -1
         var tid: String? = null
@@ -126,9 +141,21 @@ object MmsPdu {
             return b[pos++].toInt() and 0xFF
         }
         fun peek(): Int = if (pos < end) b[pos].toInt() and 0xFF else throw MalformedPdu("truncated")
-        fun bytes(n: Int): ByteArray {
-            if (n < 0 || pos + n > end) throw MalformedPdu("length out of range")
-            return b.copyOfRange(pos, pos + n).also { pos += n }
+        /** Overflow-safe: returns pos + n only when 0 <= n <= remaining bytes. */
+        fun stopAfter(n: Long): Int {
+            if (n < 0 || n > (end - pos).toLong()) throw MalformedPdu("length out of range")
+            return pos + n.toInt()
+        }
+        fun stopAfter(n: Int): Int = stopAfter(n.toLong())
+        fun bytes(n: Long): ByteArray {
+            val stop = stopAfter(n)
+            return b.copyOfRange(pos, stop).also { pos = stop }
+        }
+        fun bytes(n: Int): ByteArray = bytes(n.toLong())
+        /** Jumps to [stop], refusing to go past it if a nested read overran the declared length. */
+        fun seek(stop: Int) {
+            if (pos > stop || stop > end) throw MalformedPdu("value overran its length")
+            pos = stop
         }
         fun uintvar(): Long {
             var v = 0L
@@ -143,7 +170,7 @@ object MmsPdu {
             val x = u8()
             return when {
                 x <= 30 -> x
-                x == 31 -> uintvar().let { if (it > Int.MAX_VALUE) throw MalformedPdu("length") else it.toInt() }
+                x == 31 -> uintvar().let { if (it > (end - pos).toLong()) throw MalformedPdu("length") else it.toInt() }
                 else -> throw MalformedPdu("not a value-length")
             }
         }
@@ -167,25 +194,22 @@ object MmsPdu {
         fun encodedString(): String {
             val first = peek()
             if (first > 31) return textString()
-            val len = valueLength()
-            val stop = pos + len
-            if (stop > end) throw MalformedPdu("encoded string length")
+            val stop = stopAfter(valueLength())
             val charset = integerValue().toInt()
             if (peek() == 0x7F) pos++
-            var s = pos
+            if (pos > stop) throw MalformedPdu("encoded string overran")
+            val s = pos
             var e = s
             while (e < stop && b[e].toInt() != 0) e++
             val text = String(b, s, e - s, charsetFor(charset))
-            pos = stop
+            seek(stop)
             return text
         }
         fun fromValue(): String? {
-            val len = valueLength()
-            val stop = pos + len
-            if (stop > end) throw MalformedPdu("from length")
+            val stop = stopAfter(valueLength())
             val token = u8()
             val v = if (token == 0x80) encodedString() else null // 0x81 = insert-address
-            pos = stop
+            seek(stop)
             return v
         }
         /** Skips any WSP-encoded value. */
@@ -193,7 +217,7 @@ object MmsPdu {
             val x = peek()
             when {
                 x <= 30 -> { pos++; bytes(x) }
-                x == 31 -> { pos++; bytes(uintvar().toInt()) }
+                x == 31 -> { pos++; bytes(uintvar()) }
                 x in 32..127 -> textString()
                 else -> pos++
             }
@@ -203,9 +227,7 @@ object MmsPdu {
             val x = peek()
             if (x >= 0x80) { pos++; return (WELL_KNOWN_TYPES[x and 0x7F] ?: "application/octet-stream") to emptyMap() }
             if (x in 32..127) return textString() to emptyMap()
-            val len = valueLength()
-            val stop = pos + len
-            if (stop > end) throw MalformedPdu("content-type length")
+            val stop = stopAfter(valueLength())
             val media = when {
                 peek() >= 0x80 -> WELL_KNOWN_TYPES[u8() and 0x7F] ?: "application/octet-stream"
                 peek() in 1..30 -> { longInteger(); "application/octet-stream" }
@@ -227,7 +249,7 @@ object MmsPdu {
                     if (pos < stop) skipValue()
                 }
             }
-            pos = stop
+            seek(stop)
             return media to params
         }
         fun multipart(): List<Part> {
@@ -235,11 +257,12 @@ object MmsPdu {
             if (count > MAX_PARTS) throw MalformedPdu("too many parts")
             val out = ArrayList<Part>()
             repeat(count.toInt()) {
-                val headersLen = uintvar().toInt()
-                val dataLen = uintvar().toInt()
-                val headerEnd = pos + headersLen
-                if (headersLen < 0 || dataLen < 0 || headerEnd > end) throw MalformedPdu("part header length")
+                val headersLen = uintvar()
+                val dataLen = uintvar()
+                val headerEnd = stopAfter(headersLen)
+                if (dataLen > (end - headerEnd).toLong()) throw MalformedPdu("part data length")
                 val (type, params) = contentType()
+                if (pos > headerEnd) throw MalformedPdu("part content-type overran headers")
                 var name = params[0x85] as? String
                 while (pos < headerEnd) {
                     val h = u8()
@@ -247,7 +270,7 @@ object MmsPdu {
                     else if (h >= 0x80) skipValue()
                     else { pos--; textString(); if (pos < headerEnd) skipValue() } // application header
                 }
-                pos = headerEnd
+                seek(headerEnd)
                 out += Part(type, name, params[0x81] as? Int, bytes(dataLen))
             }
             return out

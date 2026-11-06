@@ -37,6 +37,7 @@ class SettingsStore(private val context: Context) {
         val defaultSubId = intPreferencesKey("default_sub_id")
         val onboardingDone = booleanPreferencesKey("onboarding_done")
         val widgetShowNames = booleanPreferencesKey("widget_show_names")
+        val hideOnLockScreen = booleanPreferencesKey("hide_on_lock_screen")
     }
 
     private val data get() = context.dataStore.data
@@ -57,6 +58,11 @@ class SettingsStore(private val context: Context) {
     val onboardingDone: Flow<Boolean> = data.map { it[Keys.onboardingDone] ?: false }
     /** Off by default: the widget shows counts only. Never shown while app lock is on. */
     val widgetShowNames: Flow<Boolean> = data.map { it[Keys.widgetShowNames] ?: false }
+    /**
+     * On by default: message / bill / OTP notifications use VISIBILITY_SECRET, so nothing appears on
+     * the lock screen even if the phone is set to "show sensitive content".
+     */
+    val hideOnLockScreen: Flow<Boolean> = data.map { it[Keys.hideOnLockScreen] ?: true }
 
     /** FLAG_SECURE on OTP / finance / conversation screens whenever either protection is on. */
     val secureScreens: Flow<Boolean> =
@@ -76,6 +82,7 @@ class SettingsStore(private val context: Context) {
     suspend fun setLastImportedProviderId(v: Long) = put(Keys.lastImportedProviderId, v)
     suspend fun setOnboardingDone(v: Boolean) = put(Keys.onboardingDone, v)
     suspend fun setWidgetShowNames(v: Boolean) = put(Keys.widgetShowNames, v)
+    suspend fun setHideOnLockScreen(v: Boolean) = put(Keys.hideOnLockScreen, v)
     suspend fun setDefaultSubId(v: Int?) {
         context.dataStore.edit { if (v == null) it.remove(Keys.defaultSubId) else it[Keys.defaultSubId] = v }
     }

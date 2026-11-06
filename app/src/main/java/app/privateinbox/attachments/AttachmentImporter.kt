@@ -1,6 +1,7 @@
 package app.privateinbox.attachments
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.Uri
 import app.privateinbox.security.SafeLog
 import java.io.File
@@ -8,8 +9,10 @@ import java.io.IOException
 import java.util.UUID
 
 /**
- * Copies an externally-provided attachment into app-private storage immediately, enforcing
- * [AttachmentPolicy]. Nothing downstream ever reads the foreign URI again.
+ * Copies an externally-provided attachment into app-private storage, enforcing
+ * [AttachmentPolicy] (URI shape, confused-deputy source check, magic bytes, size caps).
+ * Only called after a user action (photo picker result, or tapping "Attach" on a shared photo);
+ * nothing downstream ever reads the foreign URI again.
  */
 class AttachmentImporter(private val context: Context) {
 
@@ -23,10 +26,55 @@ class AttachmentImporter(private val context: Context) {
     fun file(name: String): File? =
         name.takeIf { Regex("^[0-9a-f\\-]{36}\\.[a-z]{3,4}$").matches(it) }?.let { File(dir, it) }?.takeIf { it.isFile }
 
+    /**
+     * Cheap check (no I/O on the content) of whether [uriString] may be imported.
+     * [grantedByCaller] = the URI was in the sender's ClipData with FLAG_GRANT_READ_URI_PERMISSION,
+     * or came back from a system picker the user drove.
+     */
+    fun check(uriString: String, grantedByCaller: Boolean): UriDecision {
+        val shape = AttachmentPolicy.checkUri(uriString, ownAuthorities)
+        if (shape != UriDecision.Accept) return shape
+        val authority = Uri.parse(uriString).authority ?: return UriDecision.Reject(UriDecision.Reason.MISSING_AUTHORITY)
+        val facts = runCatching { context.packageManager.resolveContentProvider(authority, 0) }.getOrNull()?.let { pi ->
+            if (pi.packageName == context.packageName) return UriDecision.Reject(UriDecision.Reason.OWN_PROVIDER)
+            AttachmentPolicy.ProviderFacts(
+                exported = pi.exported,
+                readPermission = pi.readPermission,
+                pathReadPermissions = pi.pathPermissions.orEmpty().mapNotNull { it.readPermission },
+            )
+        }
+        return AttachmentPolicy.checkSource(facts, ::weHold, grantedByCaller)
+    }
+
+    private fun weHold(permission: String) =
+        context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+
+    /** Deletes draft copies older than [MAX_AGE_MS] (scheduled photos live in the MMS store, not here). */
+    fun sweep(now: Long = System.currentTimeMillis()) {
+        dir.listFiles().orEmpty().filter { now - it.lastModified() > MAX_AGE_MS }.forEach { it.delete() }
+    }
+
+    /** Keeps the folder under [AttachmentPolicy.MAX_STORE_BYTES] by evicting the oldest copies. */
+    private fun makeRoom(incoming: Long) {
+        sweep()
+        val files = dir.listFiles().orEmpty().sortedBy { it.lastModified() }.toMutableList()
+        var total = files.sumOf { it.length() }
+        while (files.isNotEmpty() && total + incoming > AttachmentPolicy.MAX_STORE_BYTES) {
+            val f = files.removeAt(0)
+            total -= f.length()
+            f.delete()
+        }
+    }
+
     /** Blocking; call off the main thread. Returns null when rejected. */
-    fun import(uriString: String): Imported? {
-        if (AttachmentPolicy.checkUri(uriString, ownAuthorities) != UriDecision.Accept) return null
+    fun import(uriString: String, grantedByCaller: Boolean): Imported? {
+        val decision = check(uriString, grantedByCaller)
+        if (decision != UriDecision.Accept) {
+            SafeLog.w(TAG, "attachment source refused: ${(decision as UriDecision.Reject).reason}")
+            return null
+        }
         val uri = Uri.parse(uriString)
+        makeRoom(AttachmentPolicy.MAX_BYTES)
         val out = File(dir, UUID.randomUUID().toString())
         return try {
             val (head, size) = copyCapped(uri, out)
@@ -49,6 +97,11 @@ class AttachmentImporter(private val context: Context) {
         } catch (e: SecurityException) {
             out.delete()
             SafeLog.w(TAG, "attachment permission denied")
+            null
+        } catch (e: RuntimeException) {
+            // Hostile providers can throw anything from openInputStream/read.
+            out.delete()
+            SafeLog.w(TAG, "attachment import failed: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -82,5 +135,6 @@ class AttachmentImporter(private val context: Context) {
     private companion object {
         const val TAG = "AttachmentImporter"
         const val HEAD_BYTES = 32
+        const val MAX_AGE_MS = 12L * 60 * 60 * 1000
     }
 }

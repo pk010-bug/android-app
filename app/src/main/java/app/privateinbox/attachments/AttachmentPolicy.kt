@@ -5,7 +5,15 @@ sealed interface UriDecision {
     data object Accept : UriDecision
     data class Reject(val reason: Reason) : UriDecision
 
-    enum class Reason { NOT_CONTENT_SCHEME, OWN_PROVIDER, MALFORMED, MISSING_AUTHORITY }
+    enum class Reason {
+        NOT_CONTENT_SCHEME, OWN_PROVIDER, MALFORMED, MISSING_AUTHORITY,
+        /** Telephony / contacts / other personal-data providers: never imported from a share. */
+        BLOCKED_PROVIDER,
+        /** We could read it only through our own permissions (confused deputy), not the caller's grant. */
+        PRIVILEGED_PROVIDER,
+        /** Protected provider and the sending app did not grant us read access to this URI. */
+        NOT_GRANTED,
+    }
 }
 
 enum class ImageType(val mime: String, val extension: String) {
@@ -28,8 +36,12 @@ sealed interface ContentDecision {
  *    authority under our package are rejected too, so a malicious app cannot make us "attach"
  *    our own private data and leak it.
  *  - Bytes must start with a known image signature; the declared MIME type is not trusted.
- *  - Hard size cap; the importer copies into app-private storage immediately and only the copy
- *    is ever used afterwards.
+ *  - Personal-data providers (SMS/MMS, contacts, call log, ...) are blocked outright, and a URI on
+ *    any protected provider is accepted only when the sender granted it to us AND our own
+ *    permissions would not let us read it anyway ([checkSource]); otherwise another app could
+ *    make us attach data it cannot read itself (confused deputy).
+ *  - Hard size caps; shared URIs are only copied when the user taps "Attach", and only the
+ *    private copy is used afterwards.
  */
 object AttachmentPolicy {
 
@@ -37,6 +49,43 @@ object AttachmentPolicy {
 
     /** The authority prefix that marks "ours"; anything under it is rejected. */
     const val OWN_AUTHORITY_PREFIX = "app.privateinbox"
+
+    /** Total size the private attachments folder may hold before oldest copies are evicted. */
+    const val MAX_STORE_BYTES: Long = 20L * 1024 * 1024
+
+    /** Authorities holding personal data that a share must never pull in (incl. user-prefixed forms). */
+    val BLOCKED_AUTHORITIES = setOf(
+        "sms", "mms", "mms-sms", "telephony", "icc", "call_log", "call_log_shadow",
+        "contacts", "com.android.contacts", "com.android.blockednumber", "com.android.voicemail",
+        "user_dictionary", "settings", "com.android.calendar", "downloads", "com.android.providers.downloads",
+        "com.android.providers.telephony", "com.android.mms.file",
+    )
+
+    /** What [checkSource] needs to know about the provider behind a URI (from PackageManager). */
+    data class ProviderFacts(
+        val exported: Boolean,
+        val readPermission: String?,
+        val pathReadPermissions: List<String> = emptyList(),
+    )
+
+    /**
+     * Confused-deputy check for a URI another app handed us.
+     *  - Public provider (exported, no read permission anywhere): anyone can read it -> accept.
+     *  - Protected provider whose permission WE hold (e.g. READ_SMS, READ_CONTACTS): reject, a
+     *    grant proves nothing because the system skips the caller check when the target already
+     *    has access.
+     *  - Otherwise accept only a URI the sender explicitly granted (listed in the intent's ClipData
+     *    with FLAG_GRANT_READ_URI_PERMISSION, which the system validates against the sender).
+     *  - [provider] null = unresolvable/invisible: only a caller grant can make it readable.
+     */
+    fun checkSource(provider: ProviderFacts?, weHold: (String) -> Boolean, grantedByCaller: Boolean): UriDecision {
+        if (provider != null) {
+            val perms = listOfNotNull(provider.readPermission) + provider.pathReadPermissions
+            if (provider.exported && perms.isEmpty()) return UriDecision.Accept
+            if (perms.any(weHold)) return UriDecision.Reject(UriDecision.Reason.PRIVILEGED_PROVIDER)
+        }
+        return if (grantedByCaller) UriDecision.Accept else UriDecision.Reject(UriDecision.Reason.NOT_GRANTED)
+    }
 
     fun checkUri(uri: String, ownAuthorities: Set<String>): UriDecision {
         val trimmed = uri.trim()
@@ -61,6 +110,7 @@ object AttachmentPolicy {
         ) {
             return UriDecision.Reject(UriDecision.Reason.OWN_PROVIDER)
         }
+        if (authority.substringBefore(':') in BLOCKED_AUTHORITIES) return UriDecision.Reject(UriDecision.Reason.BLOCKED_PROVIDER)
         return UriDecision.Accept
     }
 

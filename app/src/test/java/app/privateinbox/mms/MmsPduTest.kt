@@ -70,12 +70,70 @@ class MmsPduTest {
         assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parse(pdu) }
     }
 
-    @Test fun fuzzNeverCrashesUnexpectedly() {
+    /** Only [MmsPdu.MalformedPdu] may escape the raw parser; anything else is a bug. */
+    private fun assertOnlyMalformed(b: ByteArray) {
+        try { MmsPdu.parseUnchecked(b) } catch (_: MmsPdu.MalformedPdu) { } catch (t: Throwable) {
+            throw AssertionError("parser threw ${t.javaClass.name} for ${b.joinToString(",") { (it.toInt() and 0xFF).toString(16) }}", t)
+        }
+    }
+
+    @Test fun fuzzRandomBytesOnlyMalformed() {
         val rnd = java.util.Random(42)
-        repeat(3000) {
-            val b = ByteArray(rnd.nextInt(80)).also(rnd::nextBytes)
+        repeat(20000) {
+            val b = ByteArray(rnd.nextInt(120)).also(rnd::nextBytes)
             if (b.isNotEmpty()) b[0] = 0x8C.toByte()
-            try { MmsPdu.parse(b) } catch (_: MmsPdu.MalformedPdu) { } catch (_: IllegalArgumentException) { }
+            assertOnlyMalformed(b)
+        }
+    }
+
+    @Test fun fuzzMutatedValidPdusOnlyMalformed() {
+        val seed = MmsPdu.encodeSendReq("tid1", listOf("5551234", "+15557654321"), "hi",
+            listOf(MmsPdu.OutPart("text/plain", "t.txt", "hello".toByteArray()),
+                MmsPdu.OutPart("image/png", "a.png", ByteArray(64) { it.toByte() })))
+        val rnd = java.util.Random(7)
+        val interesting = intArrayOf(0x00, 0x1E, 0x1F, 0x7F, 0x80, 0xFF)
+        repeat(20000) {
+            val b = seed.copyOf()
+            repeat(1 + rnd.nextInt(4)) {
+                val i = rnd.nextInt(b.size)
+                b[i] = (if (rnd.nextBoolean()) interesting[rnd.nextInt(interesting.size)] else rnd.nextInt(256)).toByte()
+            }
+            assertOnlyMalformed(b)
+        }
+    }
+
+    @Test fun overflowingPartHeaderLengthRejected() {
+        // multipart with one part whose headers length is 0x7FFFFFFF: pos + len used to overflow.
+        val pdu = bytes(0x8C, 0x84, 0x84, 0xA3, 0x01, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0x01, 0x83)
+        assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parseUnchecked(pdu) }
+    }
+
+    @Test fun overflowingPartDataLengthRejected() {
+        val pdu = bytes(0x8C, 0x84, 0x84, 0xA3, 0x01, 0x01, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0x83)
+        assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parseUnchecked(pdu) }
+    }
+
+    @Test fun overflowingSkippedValueRejected() {
+        // Unknown header 0xA0 with value-length 31 + uintvar 0x7FFFFFFF.
+        val pdu = bytes(0x8C, 0x82, 0xA0, 0x1F, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0x00)
+        assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parseUnchecked(pdu) }
+    }
+
+    @Test fun overflowingEncodedStringRejected() {
+        val pdu = bytes(0x8C, 0x82, 0x96, 0x1F, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0xEA, 0x41, 0x00)
+        assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parseUnchecked(pdu) }
+    }
+
+    @Test fun overflowingContentTypeRejected() {
+        val pdu = bytes(0x8C, 0x84, 0x84, 0x1F, 0x87, 0xFF, 0xFF, 0xFF, 0x7F, 0xA3)
+        assertThrows(MmsPdu.MalformedPdu::class.java) { MmsPdu.parseUnchecked(pdu) }
+    }
+
+    @Test fun publicParseNeverThrowsAnythingButMalformed() {
+        val rnd = java.util.Random(99)
+        repeat(5000) {
+            val b = ByteArray(rnd.nextInt(60)).also(rnd::nextBytes)
+            try { MmsPdu.parse(b) } catch (_: MmsPdu.MalformedPdu) { }
         }
     }
 }

@@ -106,12 +106,13 @@ class AppContainer(private val context: Context) {
         if (r.category == Category.PROMOTIONAL && !settings.notifyPromotions.first()) return
 
         val hideOtp = settings.hideOtpInNotifications.first()
+        val hideLock = settings.hideOnLockScreen.first()
         if (r.otpCode != null && !r.scam.isSuspicious) {
-            otpNotifier.show(r.messageId.toInt(), r.conversationId, r.otpCode, hideOtp)
+            otpNotifier.show(r.messageId.toInt(), r.conversationId, r.otpCode, hideOtp, hideLock)
         } else {
             val text = if (hideOtp && r.otpCode != null) "Contains a code. Open to view." else body
             val warn = r.scam.isSuspicious && settings.scamWarnings.first()
-            messageNotifier.showMessage(r.conversationId, r.displayName, text, warn)
+            messageNotifier.showMessage(r.conversationId, r.displayName, text, warn, hideLock)
         }
     }
 }

@@ -36,7 +36,7 @@ class OtpNotifier(private val context: Context) {
     }
 
     /** [conversationId] must be a real Room id; it is validated again when the tap arrives. */
-    fun show(notificationId: Int, conversationId: Long, code: String, hideCode: Boolean) {
+    fun show(notificationId: Int, conversationId: Long, code: String, hideCode: Boolean, hideOnLockScreen: Boolean = true) {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -73,7 +73,7 @@ class OtpNotifier(private val context: Context) {
             .setContentText(if (hideCode) "Tap Copy to copy it securely" else "Tap Copy to copy")
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(
-                if (hideCode) NotificationCompat.VISIBILITY_SECRET else NotificationCompat.VISIBILITY_PRIVATE,
+                if (hideCode || hideOnLockScreen) NotificationCompat.VISIBILITY_SECRET else NotificationCompat.VISIBILITY_PRIVATE,
             )
             .setPublicVersion(publicVersion)
             .setContentIntent(open)

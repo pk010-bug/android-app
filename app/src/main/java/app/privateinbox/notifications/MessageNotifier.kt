@@ -16,7 +16,10 @@ import app.privateinbox.security.PendingIntents
 
 /**
  * Notifications for regular messages and bill reminders.
- * Lock screen only ever shows the public version ("New message"), never sender or text.
+ * Lock screen: with "Hide on lock screen" ON (default) notifications are VISIBILITY_SECRET, so
+ * nothing is shown there whatever the phone's own setting. With it OFF they are
+ * VISIBILITY_PRIVATE: the content-free public version ("New message") is used only when the
+ * phone hides sensitive notification content; otherwise Android shows the full text.
  */
 class MessageNotifier(private val context: Context) {
 
@@ -66,7 +69,7 @@ class MessageNotifier(private val context: Context) {
             .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
             .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, conversationChannelId(conversationId))
 
-    fun showMessage(conversationId: Long, title: String, text: String, suspicious: Boolean) {
+    fun showMessage(conversationId: Long, title: String, text: String, suspicious: Boolean, hideOnLockScreen: Boolean = true) {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -85,7 +88,7 @@ class MessageNotifier(private val context: Context) {
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(lockVisibility(hideOnLockScreen))
             .setPublicVersion(public)
             .setContentIntent(open)
             .setAutoCancel(true)
@@ -93,7 +96,7 @@ class MessageNotifier(private val context: Context) {
         NotificationManagerCompat.from(context).notify(TAG_MESSAGE, conversationId.toInt(), n)
     }
 
-    fun showBillReminder(id: Long, title: String, text: String) {
+    fun showBillReminder(id: Long, title: String, text: String, hideOnLockScreen: Boolean = true) {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -104,7 +107,7 @@ class MessageNotifier(private val context: Context) {
             .setSmallIcon(R.drawable.ic_stat_lock)
             .setContentTitle(title)
             .setContentText(text)
-            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setVisibility(lockVisibility(hideOnLockScreen))
             .setPublicVersion(
                 NotificationCompat.Builder(context, CHANNEL_BILLS)
                     .setSmallIcon(R.drawable.ic_stat_lock)
@@ -135,6 +138,9 @@ class MessageNotifier(private val context: Context) {
             .build()
         NotificationManagerCompat.from(context).notify(TAG_SCHEDULED, id.toInt(), n)
     }
+
+    private fun lockVisibility(hide: Boolean) =
+        if (hide) NotificationCompat.VISIBILITY_SECRET else NotificationCompat.VISIBILITY_PRIVATE
 
     fun cancelConversation(conversationId: Long) {
         NotificationManagerCompat.from(context).cancel(TAG_MESSAGE, conversationId.toInt())

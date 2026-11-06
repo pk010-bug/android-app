@@ -109,7 +109,7 @@ class BillReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
                 1L -> "due tomorrow"
                 else -> "due in $days days"
             }
-            c.messageNotifier.showBillReminder(b.id, "Bill $whenText", b.biller)
+            c.messageNotifier.showBillReminder(b.id, "Bill $whenText", b.biller, c.settings.hideOnLockScreen.first())
         }
         return Result.success()
     }

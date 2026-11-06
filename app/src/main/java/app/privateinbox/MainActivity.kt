@@ -22,12 +22,14 @@ import app.privateinbox.ui.onboarding.OnboardingScreen
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import app.privateinbox.attachments.AttachmentImporter
+import app.privateinbox.attachments.UriDecision
 import app.privateinbox.compose.AndroidIntentReader
 import app.privateinbox.compose.IntentTriage
 import app.privateinbox.compose.TriageResult
 import app.privateinbox.navigation.DeepLinks
 import app.privateinbox.notifications.OtpNotifier
 import app.privateinbox.security.SafeLog
+import app.privateinbox.security.SecureWindow
 import app.privateinbox.ui.compose.Draft
 import app.privateinbox.ui.navigation.PrivateInboxNavHost
 import app.privateinbox.ui.theme.PrivateInboxTheme
@@ -52,7 +54,12 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        // Secure by default until settings load; then app-wide FLAG_SECURE follows the app-lock switch
+        // (covers Inbox, Search, Archived, Recycle bin, Compose and every other screen + Recents).
+        SecureWindow.setAppWide(this, true)
+        lifecycleScope.launch { container.settings.appLockEnabled.collect { SecureWindow.setAppWide(this@MainActivity, it) } }
         if (savedInstanceState == null) handle(intent)
+        lifecycleScope.launch(Dispatchers.IO) { runCatching { AttachmentImporter(applicationContext).sweep() } }
         lifecycleScope.launch { locked.value = container.settings.appLockEnabled.first() }
         setContent {
             val settings = container.settings
@@ -119,23 +126,35 @@ class MainActivity : FragmentActivity() {
         when (val result = IntentTriage.triage(AndroidIntentReader.read(intent), importer.ownAuthorities)) {
             TriageResult.OpenApp -> Unit
             is TriageResult.Ignore -> SafeLog.w(TAG, "ignored external intent: ${result.reason}")
-            is TriageResult.Prefill -> lifecycleScope.launch {
+            is TriageResult.Prefill -> {
                 val prefill = result.prefill
-                // Copy accepted attachments into private storage right away.
-                val imported = withContext(Dispatchers.IO) { prefill.attachmentUris.mapNotNull(importer::import) }
+                // URIs the sender granted us (the system validated these against the sender when it
+                // delivered the Intent). Nothing is copied here: the user taps "Attach" in the draft.
+                val granted = grantedUris(intent)
+                val usable = prefill.attachmentUris.filter { importer.check(it, it in granted) == UriDecision.Accept }
                 val notices = buildList {
                     if (prefill.autoSendIgnored) add("The other app asked to send automatically. Review and tap Send yourself.")
-                    val rejected = prefill.rejectedAttachments.size + (prefill.attachmentUris.size - imported.size)
+                    val rejected = prefill.rejectedAttachments.size + (prefill.attachmentUris.size - usable.size)
                     if (rejected > 0) add("$rejected attachment(s) were refused for safety.")
                 }
                 pendingDraft.value = Draft(
                     recipients = prefill.recipients,
                     body = prefill.body,
-                    attachmentNames = imported.map { it.file.name },
+                    sharedUris = usable,
                     notices = notices,
                 )
             }
         }
+    }
+
+    private fun grantedUris(intent: Intent): Set<String> {
+        if (intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION == 0) return emptySet()
+        return runCatching {
+            buildSet {
+                intent.clipData?.let { c -> for (i in 0 until c.itemCount) c.getItemAt(i).uri?.toString()?.let(::add) }
+                intent.dataString?.let(::add)
+            }
+        }.getOrDefault(emptySet())
     }
 
     private companion object {

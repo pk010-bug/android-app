@@ -108,7 +108,7 @@ fun MessageComposer(
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) scope.launch {
             val imported = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                app.privateinbox.attachments.AttachmentImporter(context.applicationContext).import(uri.toString())
+                app.privateinbox.attachments.AttachmentImporter(context.applicationContext).import(uri.toString(), grantedByCaller = true) // system photo picker result
             }
             if (imported == null) status = "That file isn't a supported image (or is over 5 MB)." else attachment = imported.file
         }
@@ -122,6 +122,7 @@ fun MessageComposer(
         status = if (granted) "Permission granted. Tap again." else "SMS permission denied."
     }
 
+    app.privateinbox.security.TapjackGuard()
     fun hasSmsPerm() = context.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
     val ready = (text.isNotBlank() || attachment != null) && recipients().isNotEmpty()
 
@@ -232,6 +233,7 @@ fun MessageComposer(
             onDismissRequest = { confirming = false },
             title = { Text(if (recipients().size > 1) "Send to ${recipients().size} people?" else "Send this message?") },
             text = {
+                app.privateinbox.security.TapjackGuard()
                 Text(summary() + if (recipients().size > 1) "\n\nEach person gets a separate SMS; they won't see each other." else "")
             },
             confirmButton = {
@@ -292,6 +294,7 @@ fun MessageComposer(
             onDismissRequest = { scheduleAt = null },
             title = { Text("Schedule for $whenText?") },
             text = {
+                app.privateinbox.security.TapjackGuard()
                 Text(
                     summary() + "\n\nThis tap authorises PrivateInbox to send exactly this text at that time. " +
                         "Delivery may be a few minutes late if the phone is asleep; if it's more than a day late it won't be sent.",

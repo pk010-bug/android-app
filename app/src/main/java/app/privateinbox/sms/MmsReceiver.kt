@@ -14,6 +14,15 @@ import app.privateinbox.security.SafeLog
  */
 class MmsReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // Untrusted, remotely-triggered input: nothing may crash the process.
+        try {
+            handle(context, intent)
+        } catch (t: Throwable) {
+            SafeLog.w(TAG, "wap push dropped: ${t.javaClass.simpleName}")
+        }
+    }
+
+    private fun handle(context: Context, intent: Intent) {
         if (intent.action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) return
         val data = intent.getByteArrayExtra("data") ?: return
         if (data.size > 4096) return

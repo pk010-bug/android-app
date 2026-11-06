@@ -35,11 +35,12 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
                 tid?.let { MmsTransport(context.applicationContext, store).acknowledge(it, subId) }
             } catch (e: MmsPdu.MalformedPdu) {
                 SafeLog.w(TAG, "downloaded mms was malformed")
-            } catch (e: Exception) {
-                SafeLog.e(TAG, "failed to process mms", e)
+            } catch (t: Throwable) {
+                // Includes OutOfMemoryError from hostile content: never crash on a received MMS.
+                SafeLog.w(TAG, "failed to process mms: ${t.javaClass.simpleName}")
             } finally {
-                file.delete()
-                store.sweepPdus()
+                runCatching { file.delete() }
+                runCatching { store.sweepPdus() }
                 pending.finish()
             }
         }

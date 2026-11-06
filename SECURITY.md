@@ -57,3 +57,24 @@ device; issues in Android itself or the carrier network.
 | Widget | Home-screen only (no keyguard category); receiver guarded by `BIND_APPWIDGET`; renders counts and optional contact names only (off by default, hidden when app lock is on); source-scan test forbids widget code touching bodies/previews/OTP; tap opens MainActivity so app lock applies | `widget/`, `WidgetContentTest` |
 | Backup media | Format 2 adds MMS parts; each restored file must re-pass MediaPolicy; written only for messages created by that restore; files removed if the transaction rolls back | `backup/BackupManager.kt`, `BackupMediaTest` |
 | Logging | `SafeLog` is the only logger; redacts digits, sender headers, emails; debug output off unless enabled per tag; tests fail on raw `Log.*`/`println` or on passing body/sender/code to SafeLog | `security/SafeLog.kt`, `LogHygieneTest` |
+
+## v1.0.1 hardening (internal audit fixes)
+
+- **MMS parser (High):** all PDU length checks are overflow-safe (`n > end - pos`); any unexpected
+  error or allocation failure is reported as a malformed PDU, and both MMS receivers catch
+  `Throwable`, so a crafted WAP push or downloaded MMS can no longer crash the app. Regression
+  tests cover each overflow; the fuzz tests now fail on any exception other than `MalformedPdu`.
+- **Shared attachments (Medium):** SMS/MMS, contacts, call-log and other personal-data
+  authorities are blocked. A URI on a protected provider is accepted only if the sending app
+  granted it (ClipData + `FLAG_GRANT_READ_URI_PERMISSION`) and our own permissions would not
+  let us read it anyway. Nothing is copied when the intent arrives: the user taps
+  "Attach shared photo". Draft copies are swept after 12 h and the folder is capped at 20 MB.
+- **Screen privacy (Medium):** with app lock on, the whole window is `FLAG_SECURE` (every screen,
+  plus Recents; `setRecentsScreenshotEnabled(false)` on Android 13+). The app starts secure and
+  relaxes only after settings load.
+- **Lock screen (Medium):** new "Hide notifications on lock screen" setting, on by default:
+  message, OTP and bill notifications use `VISIBILITY_SECRET`.
+- **Tap-jacking (Medium):** the composer and the send/schedule confirmation dialogs drop
+  touches that arrive through another app's overlay and hide other apps' overlays on
+  Android 12+ (`HIDE_OVERLAY_WINDOWS`, a normal permission).
+- OTPs copied to the clipboard are cleared after 60 s (best-effort).

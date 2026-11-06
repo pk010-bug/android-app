@@ -69,6 +69,7 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
     val bills by s.billReminders.collectAsState(initial = true)
     val scam by s.scamWarnings.collectAsState(initial = true)
     val widgetNames by s.widgetShowNames.collectAsState(initial = false)
+    val hideLock by s.hideOnLockScreen.collectAsState(initial = true)
     val days by s.recycleBinDays.collectAsState(initial = 30)
     val theme by s.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
     var isDefault by remember { mutableStateOf(DefaultSmsApp.isDefault(context)) }
@@ -108,6 +109,9 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
         }
         Toggle("Hide OTPs in notifications", "Keep codes out of notification text entirely (use Copy). Also blocks screenshots of OTP, finance and chat screens.", hideOtp) {
             scope.launch { s.setHideOtpInNotifications(it) }
+        }
+        Toggle("Hide notifications on lock screen", "Messages, codes and bill reminders never appear on the lock screen, even if your phone is set to show sensitive content. You still get the sound/vibration.", hideLock) {
+            scope.launch { s.setHideOnLockScreen(it) }
         }
         Toggle("Confirm before sending", "Show a final check (recipient, SIM, text) before any message is sent.", confirmSend) {
             scope.launch { s.setConfirmBeforeSend(it) }
