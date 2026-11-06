@@ -19,6 +19,10 @@ class AttachmentImporter(private val context: Context) {
 
     val ownAuthorities: Set<String> get() = setOf("${context.packageName}.fileprovider")
 
+    /** Resolves a bare name produced by [import]; rejects anything path-like. */
+    fun file(name: String): File? =
+        name.takeIf { Regex("^[0-9a-f\\-]{36}\\.[a-z]{3,4}$").matches(it) }?.let { File(dir, it) }?.takeIf { it.isFile }
+
     /** Blocking; call off the main thread. Returns null when rejected. */
     fun import(uriString: String): Imported? {
         if (AttachmentPolicy.checkUri(uriString, ownAuthorities) != UriDecision.Accept) return null

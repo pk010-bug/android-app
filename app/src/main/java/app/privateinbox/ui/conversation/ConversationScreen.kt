@@ -1,5 +1,11 @@
 package app.privateinbox.ui.conversation
 
+import androidx.compose.foundation.clickable
+
+import androidx.compose.ui.graphics.asImageBitmap
+
+import androidx.compose.ui.draw.clip
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -70,6 +76,9 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
 
     val conv by remember(conversationId) { container.database.conversationDao().observeById(conversationId) }.collectAsState(initial = null)
     val msgs by remember(conversationId) { container.database.messageDao().observeConversation(conversationId) }.collectAsState(initial = emptyList())
+    val mmsParts by remember(conversationId) { container.database.mmsPartDao().observeForConversation(conversationId) }
+        .collectAsState(initial = emptyList())
+    val partsByMessage = remember(mmsParts) { mmsParts.groupBy { it.messageId } }
     val listState = rememberLazyListState()
     LaunchedEffect(msgs.size) {
         if (msgs.isNotEmpty()) listState.scrollToItem(msgs.size - 1)
@@ -124,7 +133,7 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(msgs, key = { it.id }) { m -> Bubble(m) }
+                items(msgs, key = { it.id }) { m -> Bubble(m, partsByMessage[m.id].orEmpty()) }
             }
             ScheduledStrip(conversationId)
             if (c != null && c.isGroup) {
@@ -162,7 +171,7 @@ private fun ScamBanner(m: MessageEntity?) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(m: MessageEntity) {
+private fun Bubble(m: MessageEntity, parts: List<app.privateinbox.data.db.MmsPartEntity> = emptyList()) {
     val context = LocalContext.current
     val container = LocalContainer.current
     val scope = rememberCoroutineScope()
@@ -198,7 +207,9 @@ private fun Bubble(m: MessageEntity) {
                 .combinedClickable(onClick = {}, onLongClick = { menu = true })
                 .padding(12.dp),
         ) {
-            SelectionContainer { Text(m.body, style = MaterialTheme.typography.bodyLarge) }
+            m.mmsSubject?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
+            parts.filter { it.fileName != null }.forEach { MmsImage(it) }
+            if (m.body.isNotEmpty()) SelectionContainer { Text(m.body, style = MaterialTheme.typography.bodyLarge) }
             m.otpCode?.let { code ->
                 AssistChip(
                     onClick = { SensitiveClipboard.copy(context, "OTP", code) },
@@ -233,6 +244,68 @@ private fun Bubble(m: MessageEntity) {
                 menu = false
                 scope.launch { container.messages.deleteMessages(listOf(m.id)) }
             })
+        }
+    }
+}
+
+/** Downsampled thumbnail; tap for a full-screen viewer. Both windows are FLAG_SECURE. */
+@Composable
+private fun MmsImage(part: app.privateinbox.data.db.MmsPartEntity) {
+    val container = LocalContainer.current
+    var bitmap by remember(part.id) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var open by remember { mutableStateOf(false) }
+    LaunchedEffect(part.id) {
+        bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            container.mmsStore.file(part.fileName)?.let { app.privateinbox.mms.MmsImages.decode(it, 720) }
+                ?.asImageBitmap()
+        }
+    }
+    val b = bitmap
+    if (b == null) {
+        Text("Photo", style = MaterialTheme.typography.labelMedium)
+        return
+    }
+    androidx.compose.foundation.Image(
+        b,
+        contentDescription = "Photo",
+        modifier = Modifier
+            .widthIn(max = 280.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable { open = true },
+        contentScale = androidx.compose.ui.layout.ContentScale.FillWidth,
+    )
+    if (open) MmsViewer(part) { open = false }
+}
+
+
+@Composable
+private fun MmsViewer(part: app.privateinbox.data.db.MmsPartEntity, onDismiss: () -> Unit) {
+    val container = LocalContainer.current
+    var bitmap by remember(part.id) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(part.id) {
+        bitmap = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            container.mmsStore.file(part.fileName)?.let { app.privateinbox.mms.MmsImages.decode(it, 2048) }
+                ?.asImageBitmap()
+        }
+    }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false,
+            securePolicy = androidx.compose.ui.window.SecureFlagPolicy.SecureOn,
+        ),
+    ) {
+        Box(
+            Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black).clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center,
+        ) {
+            bitmap?.let {
+                androidx.compose.foundation.Image(
+                    it, contentDescription = "Photo",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                )
+            }
         }
     }
 }

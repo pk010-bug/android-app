@@ -24,7 +24,10 @@ class AppContainer(private val context: Context) {
         val text = context.assets.open(AssetRuleLoader.DEFAULT_RULES_ASSET).bufferedReader().use { it.readText() }
         RuleRepository(RuleSetParser.parse(text), database.ruleDao())
     }
-    val messages by lazy { MessageRepository(database, rules, telephony) }
+    val mmsStore by lazy { app.privateinbox.mms.MmsStore(context) }
+    val messages by lazy {
+        MessageRepository(database, rules, telephony).apply { deleteMediaFiles = { names -> names.forEach(mmsStore::delete) } }
+    }
     val backup by lazy { app.privateinbox.backup.BackupManager(database, rules, messages) }
     val messageNotifier by lazy { MessageNotifier(context) }
     val otpNotifier by lazy { OtpNotifier(context) }
@@ -33,6 +36,58 @@ class AppContainer(private val context: Context) {
     suspend fun receiveIncoming(address: String, body: String, timestamp: Long, subscriptionId: Int?) {
         val providerId = telephony.insertIncoming(address, body, timestamp, subscriptionId)
         val r = messages.ingestIncoming(address, body, timestamp, subscriptionId, providerId) ?: return
+        notifyIncoming(r, body)
+    }
+
+    /**
+     * Incoming MMS (already downloaded by the system MMS service). Images are re-checked with
+     * [app.privateinbox.attachments.AttachmentPolicy] (magic bytes + size) before touching disk;
+     * anything else becomes a text placeholder. Group MMS is kept in the sender's 1:1 thread and
+     * tagged, because without READ_PHONE_NUMBERS (deliberately not requested) we can't tell which
+     * recipient is us.
+     */
+    suspend fun receiveMms(pdu: app.privateinbox.mms.MmsPdu.Pdu, subscriptionId: Int?) {
+        val from = pdu.from?.takeIf { it.isNotBlank() } ?: "Unknown sender"
+        val timestamp = pdu.dateSeconds?.let { it * 1000 }?.takeIf { it in 1..System.currentTimeMillis() + 86_400_000 }
+            ?: System.currentTimeMillis()
+        val texts = ArrayList<String>()
+        val parts = ArrayList<app.privateinbox.data.db.MmsPartEntity>()
+        pdu.parts.take(20).forEach { p ->
+            when {
+                p.isText -> p.text().take(5_000).takeIf { it.isNotBlank() }?.let { texts += it }
+                p.contentType.startsWith("image/") -> {
+                    when (val d = app.privateinbox.attachments.AttachmentPolicy.checkContent(p.data.copyOf(minOf(32, p.data.size)), p.data.size.toLong())) {
+                        is app.privateinbox.attachments.ContentDecision.Accept -> {
+                            val name = mmsStore.save(p.data, d.type.extension)
+                            parts += app.privateinbox.data.db.MmsPartEntity(
+                                messageId = 0, mimeType = d.type.mime, fileName = name, sizeBytes = p.data.size.toLong(),
+                            )
+                        }
+                        is app.privateinbox.attachments.ContentDecision.Reject -> texts += "[image not shown: ${d.reason}]"
+                    }
+                }
+                p.contentType == "application/smil" -> Unit
+                else -> texts += "[attachment not supported: ${p.contentType.take(40)}]"
+            }
+        }
+        val recipients = (pdu.to + pdu.cc).distinct().size
+        val subject = listOfNotNull(
+            if (recipients > 1) "Group MMS ($recipients people)" else null,
+            pdu.subject?.takeIf { it.isNotBlank() }?.take(80),
+        ).joinToString(" · ").ifEmpty { null }
+        val body = texts.joinToString("\n")
+        val r = messages.ingestIncoming(
+            from, body, timestamp, subscriptionId, providerId = null,
+            isMms = true, mmsSubject = subject, mmsParts = parts,
+        )
+        if (r == null) {
+            parts.forEach { mmsStore.delete(it.fileName) }
+            return
+        }
+        notifyIncoming(r, body.ifBlank { "Photo" })
+    }
+
+    private suspend fun notifyIncoming(r: MessageRepository.IngestResult, body: String) {
         if (r.blocked || r.muted || !settings.notificationsEnabled.first()) return
         if (r.category == Category.SPAM) return
         if (r.category == Category.PROMOTIONAL && !settings.notifyPromotions.first()) return

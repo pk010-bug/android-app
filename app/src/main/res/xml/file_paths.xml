@@ -2,4 +2,6 @@
 <!-- Narrow: only a dedicated outbound share folder, never the DB or attachments store. -->
 <paths>
     <cache-path name="outbound_share" path="share/" />
+    <!-- Scratch PDUs exchanged with the system MMS service; deleted after each callback. -->
+    <cache-path name="mms_pdu" path="mms/" />
 </paths>

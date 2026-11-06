@@ -48,14 +48,3 @@ class SmsReceiver : BroadcastReceiver() {
         const val TAG = "SmsReceiver"
     }
 }
-
-/**
- * TODO(mms): MMS download/parsing is not implemented. Stub keeps the SMS-role requirements met.
- * Protected by BROADCAST_WAP_PUSH.
- */
-class MmsReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != Telephony.Sms.Intents.WAP_PUSH_DELIVER_ACTION) return
-        // Intentionally empty for now.
-    }
-}

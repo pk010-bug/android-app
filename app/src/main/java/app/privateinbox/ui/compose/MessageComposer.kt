@@ -11,7 +11,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.material.icons.outlined.SimCard
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DatePicker
@@ -69,6 +75,7 @@ import java.time.format.FormatStyle
 fun MessageComposer(
     recipients: () -> List<String>,
     initialText: String = "",
+    initialAttachment: java.io.File? = null,
     onSent: (conversationId: Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -89,8 +96,23 @@ fun MessageComposer(
     var pickDate by remember { mutableStateOf(false) }
     var pickedDate by remember { mutableStateOf<LocalDate?>(null) }
     var scheduleAt by remember { mutableStateOf<Long?>(null) }
+    var attachment by remember(initialAttachment) { mutableStateOf(initialAttachment) }
+    var thumb by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(attachment) {
+        thumb = attachment?.let { f ->
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { app.privateinbox.mms.MmsImages.decode(f, 256)?.asImageBitmap() }
+        }
+    }
     val activeSub = chosenSub ?: savedSub
     LaunchedEffect(Unit) { sims = container.sims.activeSims() }
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) scope.launch {
+            val imported = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                app.privateinbox.attachments.AttachmentImporter(context.applicationContext).import(uri.toString())
+            }
+            if (imported == null) status = "That file isn't a supported image (or is over 5 MB)." else attachment = imported.file
+        }
+    }
 
     val phonePerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         sims = container.sims.activeSims()
@@ -101,13 +123,20 @@ fun MessageComposer(
     }
 
     fun hasSmsPerm() = context.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
-    val ready = text.isNotBlank() && recipients().isNotEmpty()
+    val ready = (text.isNotBlank() || attachment != null) && recipients().isNotEmpty()
 
     fun doSend(confirmation: UserSendConfirmation) {
         val to = recipients()
         val body = text
+        val image = attachment
         scope.launch {
-            status = when (val r = sender.send(confirmation, to, body, activeSub)) {
+            val result = if (image != null) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { sender.sendMms(confirmation, to, body, image, activeSub) }
+            } else {
+                sender.send(confirmation, to, body, activeSub)
+            }
+            if (result is SmsSender.Result.Queued) attachment = null
+            status = when (val r = result) {
                 is SmsSender.Result.Queued -> { text = ""; onSent(r.conversationId); null }
                 is SmsSender.Result.Scheduled -> null
                 is SmsSender.Result.Refused -> "Not sent: ${r.reason}"
@@ -130,6 +159,19 @@ fun MessageComposer(
     Surface(tonalElevation = 2.dp, modifier = modifier.fillMaxWidth()) {
         Column(Modifier.padding(8.dp)) {
             status?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            attachment?.let {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    thumb?.let { t ->
+                        androidx.compose.foundation.Image(
+                            t, contentDescription = "Attached photo",
+                            modifier = Modifier.size(64.dp).clip(RoundedCornerShape(8.dp)),
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                        )
+                    }
+                    Text("Photo · sent as MMS, location data removed", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { attachment = null }) { Icon(Icons.Outlined.Close, contentDescription = "Remove photo") }
+                }
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 if (sims.size > 1 || !container.sims.hasPermission()) {
                     TextButton(onClick = {
@@ -147,6 +189,9 @@ fun MessageComposer(
                         }
                     }
                 }
+                IconButton(onClick = {
+                    photoPicker.launch(androidx.activity.result.PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }) { Icon(Icons.Outlined.AddPhotoAlternate, contentDescription = "Attach photo") }
                 OutlinedTextField(
                     value = text,
                     onValueChange = { if (it.length <= SmsSender.MAX_BODY) text = it },
@@ -154,7 +199,7 @@ fun MessageComposer(
                     modifier = Modifier.weight(1f),
                     maxLines = 5,
                 )
-                IconButton(enabled = ready, onClick = {
+                IconButton(enabled = ready && attachment == null, onClick = {
                     if (!hasSmsPerm()) smsPerm.launch(Manifest.permission.SEND_SMS) else pickDate = true
                 }) { Icon(Icons.Outlined.Schedule, contentDescription = "Schedule") }
                 FilledIconButton(
@@ -176,7 +221,7 @@ fun MessageComposer(
 
     val simLabel = sims.firstOrNull { it.subscriptionId == activeSub }?.label
     fun summary() = "To: ${recipients().joinToString(", ")}" + (simLabel?.let { "\nFrom: $it" } ?: "") +
-        "\n\n" + text.take(300) + if (text.length > 300) "…" else ""
+        "\n\n" + (if (attachment != null) "[photo] " else "") + text.take(300) + if (text.length > 300) "…" else ""
 
     if (confirming) {
         AlertDialog(

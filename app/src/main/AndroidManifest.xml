@@ -94,6 +94,14 @@
             android:name=".notifications.CopyOtpReceiver"
             android:exported="false" />
 
+        <!-- MMS callbacks from the system MMS service; reached only via our immutable PendingIntents. -->
+        <receiver
+            android:name=".sms.MmsDownloadedReceiver"
+            android:exported="false" />
+        <receiver
+            android:name=".sms.MmsSentReceiver"
+            android:exported="false" />
+
         <!--
             Library components locked down: these AndroidX receivers ship exported (DUMP-protected)
             for adb tooling. We don't need that, so force them private. WorkManager's
@@ -133,7 +141,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- TODO(mms): MMS is out of MVP scope; stub keeps the default-SMS role eligible. -->
+        <!-- MMS notification push: parsed defensively, then downloaded by the system MMS service. -->
         <receiver
             android:name=".sms.MmsReceiver"
             android:exported="true"

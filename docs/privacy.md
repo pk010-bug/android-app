@@ -27,7 +27,8 @@ and login codes. These rules exist so that data can never become someone else's.
 
 - `RECEIVE_SMS`, `READ_SMS`, `SEND_SMS`, `RECEIVE_MMS`, `RECEIVE_WAP_PUSH` — required to act as
   the default SMS app.
-- `READ_CONTACTS` — show names instead of numbers; contacts are only read, never stored elsewhere.
+- `READ_CONTACTS` — show names instead of numbers and suggest recipients while typing; contacts
+  are only read, never stored elsewhere. The contact picker button works without it.
 - `POST_NOTIFICATIONS` — local new-message / OTP / bill notifications.
 - `READ_PHONE_STATE` — only to list active SIMs (slot + carrier label) for the dual-SIM picker.
   Requested the first time you open the picker; phone numbers and device IDs are never read.
@@ -40,6 +41,15 @@ Merged in by AndroidX libraries (harmless without network access):
   it cannot send or receive anything.
 
 Nothing else. In particular: no `INTERNET`, no `CALL_PHONE`, no location, no account access.
+
+### MMS and the network
+
+MMS travels over mobile data, but PrivateInbox never opens a connection. It hands a request to
+Android's built-in MMS service (`SmsManager.downloadMultimediaMessage` / `sendMultimediaMessage`),
+which talks to your carrier. The only things sent without a tap are protocol acknowledgements
+the carrier requires ("message retrieved", with read/delivery reports explicitly *refused*).
+Photos you send are re-encoded, which strips EXIF metadata such as GPS location. Received images
+are stored in app-private, no-backup storage and deleted when the message is purged.
 
 Verify on any build:
 
@@ -57,7 +67,6 @@ $ANDROID_HOME/build-tools/35.0.0/aapt2 dump permissions app/build/outputs/apk/de
 
 ## Planned hardening
 
-- MMS support under the same attachment rules.
 - A one-tap "wipe local data" action.
 - Optional backup-on-schedule to a local folder.
 

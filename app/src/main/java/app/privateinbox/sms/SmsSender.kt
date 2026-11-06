@@ -105,6 +105,66 @@ class SmsSender(
         }
     }
 
+    /**
+     * Sends a picture message. [image] must already be in our private attachments store (copied
+     * by [app.privateinbox.attachments.AttachmentImporter], which enforced the policy). It is
+     * re-encoded to a metadata-free JPEG sized for the carrier before it leaves the app.
+     * Multiple recipients become one group MMS. Blocking work runs on the caller's dispatcher.
+     */
+    suspend fun sendMms(
+        confirmation: UserSendConfirmation,
+        recipients: List<String>,
+        body: String,
+        image: java.io.File,
+        subscriptionId: Int? = null,
+    ): Result {
+        if (!confirmation.consume()) return Result.Refused("send must be confirmed by a tap")
+        val clean = cleanRecipients(recipients)
+        validate(clean, body.ifBlank { "-" })?.let { return it }
+        if (clean.any { r -> r.count(Char::isDigit) < 3 || r.any { it.isLetter() } }) return Result.Refused("MMS needs phone numbers")
+        val manager = smsManager(subscriptionId) ?: return Result.Refused("no SmsManager")
+        val maxBytes = runCatching { manager.carrierConfigValues.getInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, DEFAULT_MMS_MAX) }
+            .getOrDefault(DEFAULT_MMS_MAX).coerceIn(100_000, 1_000_000)
+        val raw = runCatching { image.takeIf { it.length() in 1..app.privateinbox.attachments.AttachmentPolicy.MAX_BYTES }?.readBytes() }.getOrNull()
+            ?: return Result.Refused("attachment unavailable")
+        val jpeg = app.privateinbox.mms.MmsImages.compressForMms(raw, maxBytes - 8_000 - body.length * 3)
+            ?: return Result.Refused("couldn't shrink the image enough for MMS")
+
+        val store = app.privateinbox.mms.MmsStore(context)
+        val record = repository.recordOutgoing(clean, body, subscriptionId, isMms = true)
+        val stored = store.save(jpeg, "jpg")
+        repository.addMmsPart(
+            app.privateinbox.data.db.MmsPartEntity(messageId = record.messageId, mimeType = "image/jpeg", fileName = stored, sizeBytes = jpeg.size.toLong()),
+        )
+        val parts = buildList {
+            if (body.isNotBlank()) add(app.privateinbox.mms.MmsPdu.OutPart("text/plain", "text_0.txt", body.toByteArray(Charsets.UTF_8)))
+            add(app.privateinbox.mms.MmsPdu.OutPart("image/jpeg", "image_0.jpg", jpeg))
+        }
+        val pdu = app.privateinbox.mms.MmsPdu.encodeSendReq(
+            "T" + java.lang.Long.toHexString(System.nanoTime()) + record.messageId, clean, null, parts,
+        )
+        val file = store.newPduFile("send").apply { writeBytes(pdu) }
+        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val sent = PendingIntents.broadcast(
+            context,
+            file.name.hashCode(),
+            Intent(context, MmsSentReceiver::class.java)
+                .setAction(MmsSentReceiver.ACTION)
+                .putExtra(MmsSentReceiver.EXTRA_FILE, file.name)
+                .putExtra(MmsSentReceiver.EXTRA_MESSAGE_ID, record.messageId),
+        )
+        return try {
+            manager.sendMultimediaMessage(context, uri, null, null, sent)
+            SafeLog.i(TAG, "queued mms (${jpeg.size / 1024} KiB) to ${clean.size} recipient(s)")
+            Result.Queued(record.messageId, record.conversationId)
+        } catch (e: Exception) {
+            file.delete()
+            repository.updateSendStatus(record.messageId, success = false)
+            SafeLog.e(TAG, "mms send failed", e)
+            Result.Refused("the phone rejected the MMS")
+        }
+    }
+
     private fun cleanRecipients(recipients: List<String>) =
         recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
 
@@ -167,6 +227,7 @@ class SmsSender(
         private const val TAG = "SmsSender"
         const val MAX_BODY = 5_000
         const val MAX_RECIPIENTS = 20
+        private const val DEFAULT_MMS_MAX = 300 * 1024
         const val MIN_LEAD_MS = 60_000L
         const val MAX_LEAD_MS = 366L * 24 * 3600 * 1000
         const val EARLY_SLACK_MS = 2 * 60_000L

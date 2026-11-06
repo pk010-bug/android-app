@@ -51,6 +51,9 @@ class MessageRepository(
         subscriptionId: Int?,
         providerId: Long?,
         read: Boolean = false,
+        isMms: Boolean = false,
+        mmsSubject: String? = null,
+        mmsParts: List<app.privateinbox.data.db.MmsPartEntity> = emptyList(),
     ): IngestResult? {
         val key = AddressNormalizer.key(address)
         val blocked = db.blockedSenderDao().isBlocked(key)
@@ -89,14 +92,17 @@ class MessageRepository(
                     otpCode = otp,
                     scamScore = scam.score,
                     scamReasons = ScamDetector.reasonsToString(scam.signals),
+                    isMms = isMms,
+                    mmsSubject = mmsSubject,
                 ),
             )
             if (id <= 0) return@withTransaction null
+            mmsParts.forEach { db.mmsPartDao().insert(it.copy(messageId = id)) }
             val updated = conv.copy(
                 address = address,
                 displayName = conv.displayName ?: telephony.contactName(address),
                 category = category,
-                lastMessagePreview = preview(body),
+                lastMessagePreview = preview(body.ifBlank { if (isMms) "Photo" else "" }),
                 lastMessageAt = maxOf(conv.lastMessageAt, timestamp),
                 unreadCount = if (read) conv.unreadCount else conv.unreadCount + 1,
                 scamScore = maxOf(conv.scamScore, scam.score),
@@ -227,9 +233,13 @@ class MessageRepository(
         ids.mapNotNull { messages.getById(it)?.conversationId }.toSet().forEach { refreshConversation(it) }
     }
 
-    /** Permanently removes messages (and their provider rows when we are default app). */
+    /** Called with the bare file names of MMS media that must be deleted from disk. */
+    var deleteMediaFiles: (List<String>) -> Unit = {}
+
+    /** Permanently removes messages (and their provider rows when we are default app, and MMS files). */
     suspend fun purge(ids: List<Long>) {
         val rows = ids.mapNotNull { messages.getById(it) }
+        db.mmsPartDao().forMessages(rows.filter { it.isMms }.map { it.id }).mapNotNull { it.fileName }.let(deleteMediaFiles)
         rows.forEach { it.providerId?.let(telephony::delete) }
         messages.hardDelete(rows.map { it.id })
         rows.map { it.conversationId }.toSet().forEach { refreshConversation(it) }

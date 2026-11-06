@@ -9,9 +9,18 @@ class SendPathTest {
     private fun filesMentioning(token: Regex) =
         TestFiles.mainSources().filter { f -> f.readLines().any { l -> !l.trimStart().startsWith("*") && !l.trimStart().startsWith("//") && token.containsMatchIn(l) } }
 
-    @Test fun smsManagerOnlyInSmsSender() {
+    @Test fun smsManagerOnlyInSmsSenderAndMmsTransport() {
         val users = filesMentioning(Regex("""\bSmsManager\b""")).map { it.name }.toSet()
-        assertTrue("SmsManager used outside SmsSender: $users", users == setOf("SmsSender.kt"))
+        assertTrue("SmsManager used outside SmsSender/MmsTransport: $users", users == setOf("SmsSender.kt", "MmsTransport.kt"))
+    }
+
+    @Test fun mmsTransportOnlySendsProtocolAcks() {
+        val src = TestFiles.mainSources().single { it.name == "MmsTransport.kt" }.readText()
+        assertTrue("MmsTransport must send exactly one kind of PDU", Regex("""\.sendMultimediaMessage\(""").findAll(src).count() == 1)
+        assertTrue("MmsTransport must build its ack itself", "MmsPdu.encodeNotifyResp(" in src)
+        assertTrue("MmsTransport must never build user messages", "encodeSendReq" !in src)
+        val sendReqUsers = filesMentioning(Regex("""encodeSendReq\(""")).map { it.name }.toSet()
+        assertTrue("M-Send.req built outside SmsSender: $sendReqUsers", sendReqUsers == setOf("SmsSender.kt", "MmsPdu.kt"))
     }
 
     @Test fun sendConfirmationOnlyMintedByComposer() {

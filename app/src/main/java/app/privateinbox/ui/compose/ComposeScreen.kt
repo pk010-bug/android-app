@@ -76,6 +76,9 @@ fun ComposeScreen(draft: Draft, onBack: () -> Unit, onSent: (Long) -> Unit) {
     var typed by rememberSaveable(draft) { mutableStateOf("") }
     var suggestions by remember { mutableStateOf<List<ContactLookup.Suggestion>>(emptyList()) }
     var canSuggest by remember { mutableStateOf(lookup.canSuggest()) }
+    val draftImage = remember(draft) {
+        draft.attachmentNames.firstOrNull()?.let { app.privateinbox.attachments.AttachmentImporter(context.applicationContext).file(it) }
+    }
 
     fun add(r: Recipient) {
         if (chips.size >= SmsSender.MAX_RECIPIENTS) return
@@ -152,9 +155,9 @@ fun ComposeScreen(draft: Draft, onBack: () -> Unit, onSent: (Long) -> Unit) {
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (draft.attachmentNames.isNotEmpty()) {
+            if (draft.attachmentNames.size > 1) {
                 Text(
-                    "${draft.attachmentNames.size} image(s) attached (copied privately).",
+                    "${draft.attachmentNames.size} images were shared; only the first is attached (one photo per MMS).",
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -165,6 +168,7 @@ fun ComposeScreen(draft: Draft, onBack: () -> Unit, onSent: (Long) -> Unit) {
                 (chips.map { it.number } + listOfNotNull(pending)).distinct()
             },
             initialText = draft.body,
+            initialAttachment = draftImage,
             onSent = onSent,
         )
     }

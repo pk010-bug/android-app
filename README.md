@@ -96,7 +96,7 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 
 ## Features
 
-**Shipped (works on-device, builds and passes 84 unit tests):**
+**Shipped in v0.2 (builds; 102 JVM unit tests pass; not yet verified on a physical device):**
 - Default SMS app: onboarding + role request, receive (`SMS_DELIVER`), write to the system SMS
   store, incremental import of existing messages, read-only mode when not default
 - Smart inbox: Important / Personal / OTP / Promotional / Spam / Unknown, with unread counts per
@@ -115,10 +115,23 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 - Search, block/unblock, recycle bin (restore / delete forever / auto-purge after 7-90 days)
 - Encrypted local backup & restore (password, AES-256-GCM + PBKDF2, file you choose)
 - App lock (biometric / device credential) with timeout; theme (system / light / dark)
+- Composer: recipient chips, system contact picker (needs no permission), optional on-device
+  contact suggestions (READ_CONTACTS)
+- Scheduled send (SMS): pick date/time, confirm once; survives reboot (WorkManager); pending list
+  per conversation and in Settings → Scheduled messages, with cancel
+- Groups: send one text to up to 20 people (each gets an individual SMS); group threads
+- MMS receive: photos and text through the system MMS service, shown as image bubbles with a
+  full-screen viewer; other media types appear as a placeholder
+- MMS send: one photo (+ text) per message, re-encoded as metadata-free JPEG sized for the carrier;
+  multiple recipients become a group MMS
 
-**Still missing:** MMS send/receive, group (multi-recipient) messaging, scheduled send,
-per-conversation notification sounds, contact picker in composer, home-screen widget,
-instrumented UI tests, signed reproducible release build (planned as a separate step).
+**Still missing / known gaps:**
+- MMS is not written to the system MMS store (other SMS apps won't see it); backups don't include
+  MMS images; video/audio/vCard MMS aren't displayed; incoming group MMS appear in the sender's
+  1:1 thread (tagged "Group MMS") because we deliberately don't read your own phone number
+- Scheduled send is SMS-only and may fire a few minutes late in Doze; >24h late = not sent
+- Per-conversation notification sounds, home-screen widget, instrumented UI tests
+- Signed reproducible release build (planned as a separate step)
 
 ## License
 
