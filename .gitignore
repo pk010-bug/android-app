@@ -24,3 +24,6 @@ keystore.properties
 
 # Logs
 *.log
+
+# Release signing secrets
+release/
