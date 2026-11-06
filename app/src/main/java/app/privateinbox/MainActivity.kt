@@ -123,7 +123,7 @@ class MainActivity : FragmentActivity() {
             return
         }
         val importer = AttachmentImporter(applicationContext)
-        when (val result = IntentTriage.triage(AndroidIntentReader.read(intent), importer.ownAuthorities)) {
+        when (val result = IntentTriage.triage(AndroidIntentReader.read(intent), importer.ownAuthorities, importer.currentUserId)) {
             TriageResult.OpenApp -> Unit
             is TriageResult.Ignore -> SafeLog.w(TAG, "ignored external intent: ${result.reason}")
             is TriageResult.Prefill -> {
@@ -141,6 +141,8 @@ class MainActivity : FragmentActivity() {
                     recipients = prefill.recipients,
                     body = prefill.body,
                     sharedUris = usable,
+                    // Carry the real grant decision to the "Attach" tap instead of assuming one there.
+                    grantedSharedUris = usable.filter { it in granted }.toSet(),
                     notices = notices,
                 )
             }

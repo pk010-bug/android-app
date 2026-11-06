@@ -39,7 +39,8 @@ class BackupManager(
 
     data class RestoreStats(val conversations: Int, val messages: Int, val rules: Int, val media: Int = 0, val paidBills: Int = 0)
 
-    suspend fun export(password: CharArray, iterations: Int = BackupCrypto.DEFAULT_ITERATIONS): ByteArray {
+    suspend fun export(password: CharArray): ByteArray {
+        BackupPasswordPolicy.check(password)?.let { throw IllegalArgumentException(it.message) }
         val payload = BackupPayload(
             createdAt = System.currentTimeMillis(),
             conversations = db.conversationDao().getAll().map {
@@ -62,7 +63,7 @@ class BackupManager(
             blocked = db.blockedSenderDao().getAll().map { BBlocked(it.addressKey, it.address, it.createdAt) },
             paidBillMessageIds = db.billDao().getAll().filter { it.paid }.mapNotNull { it.messageId },
         )
-        return BackupCrypto.encrypt(BackupJson.encode(payload), password, iterations)
+        return BackupCrypto.encrypt(BackupJson.encode(payload), password)
     }
 
     /** Merges a backup into the current data (existing messages are kept; duplicates skipped). */

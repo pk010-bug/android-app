@@ -22,6 +22,9 @@ class AttachmentImporter(private val context: Context) {
 
     val ownAuthorities: Set<String> get() = setOf("${context.packageName}.fileprovider")
 
+    /** Android user ID of this process (UserHandle.getUserId(uid) = uid / PER_USER_RANGE). */
+    val currentUserId: Int get() = android.os.Process.myUid() / PER_USER_RANGE
+
     /** Resolves a bare name produced by [import]; rejects anything path-like. */
     fun file(name: String): File? =
         name.takeIf { Regex("^[0-9a-f\\-]{36}\\.[a-z]{3,4}$").matches(it) }?.let { File(dir, it) }?.takeIf { it.isFile }
@@ -32,17 +35,22 @@ class AttachmentImporter(private val context: Context) {
      * or came back from a system picker the user drove.
      */
     fun check(uriString: String, grantedByCaller: Boolean): UriDecision {
-        val shape = AttachmentPolicy.checkUri(uriString, ownAuthorities)
+        val shape = AttachmentPolicy.checkUri(uriString, ownAuthorities, currentUserId)
         if (shape != UriDecision.Accept) return shape
-        val authority = Uri.parse(uriString).authority ?: return UriDecision.Reject(UriDecision.Reason.MISSING_AUTHORITY)
-        val facts = runCatching { context.packageManager.resolveContentProvider(authority, 0) }.getOrNull()?.let { pi ->
-            if (pi.packageName == context.packageName) return UriDecision.Reject(UriDecision.Reason.OWN_PROVIDER)
-            AttachmentPolicy.ProviderFacts(
-                exported = pi.exported,
-                readPermission = pi.readPermission,
-                pathReadPermissions = pi.pathPermissions.orEmpty().mapNotNull { it.readPermission },
-            )
-        }
+        val authority = AttachmentPolicy.canonicalAuthority(uriString, currentUserId)
+            ?: return UriDecision.Reject(UriDecision.Reason.MALFORMED)
+        // Defence in depth: the authority ContentResolver will route to (decoded, user prefix
+        // stripped) must be exactly the one we validated and resolve below.
+        val routed = Uri.parse(uriString).authority?.substringAfterLast('@')
+        if (routed != authority) return UriDecision.Reject(UriDecision.Reason.MALFORMED)
+        val pi = runCatching { context.packageManager.resolveContentProvider(authority, 0) }.getOrNull()
+            ?: return UriDecision.Reject(UriDecision.Reason.UNRESOLVED_PROVIDER)
+        if (pi.packageName == context.packageName) return UriDecision.Reject(UriDecision.Reason.OWN_PROVIDER)
+        val facts = AttachmentPolicy.ProviderFacts(
+            exported = pi.exported,
+            readPermission = pi.readPermission,
+            pathReadPermissions = pi.pathPermissions.orEmpty().mapNotNull { it.readPermission },
+        )
         return AttachmentPolicy.checkSource(facts, ::weHold, grantedByCaller)
     }
 
@@ -136,5 +144,6 @@ class AttachmentImporter(private val context: Context) {
         const val TAG = "AttachmentImporter"
         const val HEAD_BYTES = 32
         const val MAX_AGE_MS = 12L * 60 * 60 * 1000
+        const val PER_USER_RANGE = 100_000
     }
 }

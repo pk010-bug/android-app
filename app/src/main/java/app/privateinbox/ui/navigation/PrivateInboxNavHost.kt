@@ -174,9 +174,13 @@ fun PrivateInboxNavHost(
 }
 
 private val DraftSaver = listSaver<Draft, Any>(
-    save = { listOf(ArrayList(it.recipients), it.body, ArrayList(it.attachmentNames), ArrayList(it.notices), ArrayList(it.sharedUris)) },
+    save = { listOf(ArrayList(it.recipients), it.body, ArrayList(it.attachmentNames), ArrayList(it.notices), ArrayList(it.sharedUris), ArrayList(it.grantedSharedUris)) },
     restore = {
         @Suppress("UNCHECKED_CAST")
-        Draft(it[0] as List<String>, it[1] as String, it[2] as List<String>, it[3] as List<String>, it.getOrNull(4) as? List<String> ?: emptyList())
+        Draft(
+            it[0] as List<String>, it[1] as String, it[2] as List<String>, it[3] as List<String>,
+            it.getOrNull(4) as? List<String> ?: emptyList(),
+            (it.getOrNull(5) as? List<String>)?.toSet() ?: emptySet(),
+        )
     },
 )

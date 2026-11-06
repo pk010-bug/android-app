@@ -18,8 +18,13 @@ class AttachmentSourceTest {
             "content://call_log/calls", "content://telephony/carriers", "content://MMS/part/1",
             "content://mms:0/part/1",
         ).forEach { assertEquals(it, UriDecision.Reason.BLOCKED_PROVIDER, reason(it)) }
-        // user-prefixed form is rejected as malformed before the blocklist
-        assertEquals(UriDecision.Reason.MALFORMED, reason("content://0@mms/part/1"))
+        // user-prefixed form: another (or unknown) user is refused; our own user's prefix is stripped
+        // and the blocklist then applies to the real authority
+        assertEquals(UriDecision.Reason.OTHER_USER, reason("content://0@mms/part/1"))
+        assertEquals(
+            UriDecision.Reason.BLOCKED_PROVIDER,
+            (AttachmentPolicy.checkUri("content://0@mms/part/1", own, currentUserId = 0) as UriDecision.Reject).reason,
+        )
     }
 
     @Test fun publicProviderNeedsNoGrant() {
@@ -42,8 +47,10 @@ class AttachmentSourceTest {
         assertEquals(UriDecision.Accept, src(sig, granted = true))
     }
 
-    @Test fun unresolvableProviderRequiresGrant() {
-        assertEquals(UriDecision.Reject(UriDecision.Reason.NOT_GRANTED), src(null, granted = false))
-        assertEquals(UriDecision.Accept, src(null, granted = true))
+    @Test fun unresolvableProviderIsRefusedEvenWithGrant() {
+        // F-01: an authority PackageManager can't resolve (e.g. "0@mms") may still be routed to a
+        // privileged provider by ContentResolver, so the sender's grant flag must not rescue it.
+        assertEquals(UriDecision.Reject(UriDecision.Reason.UNRESOLVED_PROVIDER), src(null, granted = false))
+        assertEquals(UriDecision.Reject(UriDecision.Reason.UNRESOLVED_PROVIDER), src(null, granted = true))
     }
 }

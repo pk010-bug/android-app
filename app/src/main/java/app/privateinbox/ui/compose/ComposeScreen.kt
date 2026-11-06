@@ -61,6 +61,8 @@ data class Draft(
     val attachmentNames: List<String> = emptyList(),
     val notices: List<String> = emptyList(),
     val sharedUris: List<String> = emptyList(),
+    /** Subset of [sharedUris] the sending app actually granted us (FLAG_GRANT_READ_URI_PERMISSION). */
+    val grantedSharedUris: Set<String> = emptySet(),
 )
 
 /** A recipient chip: [number] is what we send to; [name] is display only. */
@@ -182,7 +184,7 @@ fun ComposeScreen(draft: Draft, onBack: () -> Unit, onSent: (Long) -> Unit) {
                         composeScope.launch {
                             val imported = withContext(Dispatchers.IO) {
                                 app.privateinbox.attachments.AttachmentImporter(context.applicationContext)
-                                    .import(draft.sharedUris.first(), grantedByCaller = true)
+                                    .import(draft.sharedUris.first(), grantedByCaller = draft.sharedUris.first() in draft.grantedSharedUris)
                             }
                             sharedImage = imported?.file
                             sharedState = if (imported == null) "failed" else "done"

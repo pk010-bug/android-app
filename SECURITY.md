@@ -46,10 +46,10 @@ device; issues in Android itself or the carrier network.
 | PendingIntents | Always `FLAG_IMMUTABLE`, always explicit and same-package (enforced at runtime) | `security/PendingIntents.kt` |
 | Data at rest | Room encrypted with SQLCipher (AES-256); random 256-bit passphrase wrapped by an AndroidKeyStore AES-GCM key, stored in `noBackupFilesDir`; `allowBackup=false` and all backup / transfer domains excluded | `data/db/PrivateInboxDatabase.kt`, `security/DatabaseKeyManager.kt` |
 | Notifications | OTP digits never on the lock screen (public version without code; `VISIBILITY_SECRET` when "Hide OTPs" is on); OTP notifications time out after 10 min; copied codes flagged sensitive (API 33+ `EXTRA_IS_SENSITIVE`) | `notifications/`, `security/SensitiveClipboard.kt` |
-| Screens | `FLAG_SECURE` on OTP / finance / conversation screens when app lock or "Hide OTPs" is on | `security/SecureScreen.kt` |
-| App lock | BiometricPrompt (biometric or device credential), relocks after a configurable timeout; content is not composed until the lock state is known | `ui/lock/`, `MainActivity.kt` |
+| Screens | Since v1.0.1: whole-window `FLAG_SECURE` on every screen (and no Recents snapshot on Android 13+) whenever app lock is on; the window starts secure until settings load. With "Hide OTPs" on, OTP / finance / conversation screens are also `FLAG_SECURE` | `security/SecureScreen.kt`, `MainActivity.kt` |
+| App lock | BiometricPrompt with Class 3 (strong) biometrics or device credential (Android 11+; Android 8-10 fall back to the only supported combination, weak biometric or credential); on Android 11+ unlock also requires an auth-bound Keystore key via CryptoObject (`security/AppLockKey.kt`); fresh authentication before turning the lock on/off, changing its timeout, showing OTPs/lock-screen notifications, and backup export/restore; the database key is intentionally not bound to user auth; relocks after a configurable timeout; content is not composed until the lock state is known | `ui/lock/`, `MainActivity.kt` |
 | Send confirmation | Default-on dialog shows recipient, SIM, and text before the single-use send token is minted | `ui/compose/MessageComposer.kt` |
-| Backups | User-initiated only; PBKDF2-HMAC-SHA256 (310k) → AES-256-GCM with authenticated header; zip-bomb and size guards on restore; restored rules re-validated; no upload path exists | `backup/` |
+| Backups | User-initiated only; PBKDF2-HMAC-SHA256 (600k; KDF id + iterations in the authenticated v2 header, v1/310k files still restore) → AES-256-GCM; new backups need a 12+ character password that passes a strength check (`BackupPasswordPolicy`); export/restore need a fresh authentication; zip-bomb and size guards on restore; restored rules re-validated; no upload path exists | `backup/` |
 | Background work | WorkManager jobs are local only (provider import, recycle-bin purge, bill reminders); receivers use `goAsync` and never log content | `work/`, `sms/` |
 | Scheduled send | Scheduling consumes the same tap token; the row (id, recipients, body hash, time, SIM) is sealed with a non-exportable AndroidKeyStore HMAC-SHA256 key. The worker re-verifies, claims the row atomically (no double send), and drops messages >24 h late. Only `ScheduledSendWorker` may call `sendScheduled` (source-scan test) | `sms/ScheduledSendAuthorizer.kt`, `sms/SmsSender.kt`, `SendPathTest` |
 | MMS | Push payloads and downloaded PDUs parsed by a bounds-checked, fuzz-tested codec with part/size caps; transport by the system MMS service only (no INTERNET). Incoming images re-checked by magic bytes + size, stored under `noBackupFilesDir/mms` with validated bare file names; scratch PDUs in a narrow FileProvider path and deleted after each callback. Outgoing photos re-encoded (EXIF stripped). `MmsTransport` may only send its own NotifyResp (test-enforced); user MMS goes through `SmsSender` with a tap token. Image viewer dialog is `FLAG_SECURE` | `mms/`, `sms/Mms*.kt`, `SendPathTest` |
@@ -69,6 +69,11 @@ device; issues in Android itself or the carrier network.
   granted it (ClipData + `FLAG_GRANT_READ_URI_PERMISSION`) and our own permissions would not
   let us read it anyway. Nothing is copied when the intent arrives: the user taps
   "Attach shared photo". Draft copies are swept after 12 h and the folder is capped at 20 MB.
+  Authorities are checked in canonical form: percent-escapes in the authority are refused
+  (`content://0%40mms/...`), a `N@` user-ID prefix is allowed only for our own user and stripped
+  before the block lists, encoded `..` path segments are refused, and a provider PackageManager
+  cannot resolve is rejected even when the sender claims a grant. The "Attach" tap re-checks with
+  the sender's real grant instead of assuming one.
 - **Screen privacy (Medium):** with app lock on, the whole window is `FLAG_SECURE` (every screen,
   plus Recents; `setRecentsScreenshotEnabled(false)` on Android 13+). The app starts secure and
   relaxes only after settings load.
@@ -78,3 +83,21 @@ device; issues in Android itself or the carrier network.
   touches that arrive through another app's overlay and hide other apps' overlays on
   Android 12+ (`HIDE_OVERLAY_WINDOWS`, a normal permission).
 - OTPs copied to the clipboard are cleared after 60 s (best-effort).
+
+## v1.0.2 hardening
+
+Contributed by the project owner (medium-severity fixes, reviewed before merge):
+
+- **Shared-attachment authority bypass:** authorities are validated in canonical form.
+  Percent-escapes are refused (`content://0%40mms/...` previously reached the MMS provider), a
+  `N@` user-ID prefix is allowed only for our own user, encoded `..` segments are refused, and
+  unresolvable providers are rejected. The "Attach" tap now uses the sender's real grant.
+- **App lock:** Class 3 biometrics or device credential on Android 11+ (Android 8-10 keep the
+  only supported weak+credential combination), an auth-bound Keystore key checked via
+  CryptoObject, and fresh authentication for lock on/off, timeout, showing OTPs or lock-screen
+  content, and backup export/restore.
+- **Backups:** PBKDF2-HMAC-SHA256 at 600k iterations with the KDF id in the authenticated v2
+  header (v1/310k files still restore), and a strength policy for new backup passwords.
+
+Also in v1.0.2: turning off "Confirm before sending" and showing contact names on the widget
+need a fresh authentication.

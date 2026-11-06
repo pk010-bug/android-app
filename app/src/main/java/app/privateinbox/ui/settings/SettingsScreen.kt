@@ -92,29 +92,38 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
         )
 
         Section("Security")
+        val activity = context as? FragmentActivity
+        // F-02: security-sensitive changes need a fresh authentication, even inside an unlocked session.
+        val reauth: (String, () -> Unit) -> Unit = { reason, action ->
+            AppLock.requireFreshAuth(activity, reason, onError = { lockError = it }) { lockError = null; action() }
+        }
         Toggle("App lock", "Fingerprint / face / device PIN to open. Also blocks screenshots of sensitive screens.", appLock) { on ->
-            val activity = context as? FragmentActivity
             if (on && (activity == null || !AppLock.available(activity))) {
                 lockError = "Set up a screen lock on this phone first."
             } else {
-                lockError = null
-                scope.launch { s.setAppLock(on); app.privateinbox.widget.InboxWidget.requestUpdate(context) }
+                reauth(if (on) "Turn on app lock" else "Turn off app lock") {
+                    scope.launch { s.setAppLock(on); app.privateinbox.widget.InboxWidget.requestUpdate(context) }
+                }
             }
         }
         lockError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
         if (appLock) {
             Choice("Lock after leaving the app", timeoutLabel(timeout), listOf(0, 30, 60, 300, 900).map { it to timeoutLabel(it) }) {
-                scope.launch { s.setLockTimeoutSec(it) }
+                if (it != timeout) reauth("Change when the app locks") { scope.launch { s.setLockTimeoutSec(it) } }
             }
         }
-        Toggle("Hide OTPs in notifications", "Keep codes out of notification text entirely (use Copy). Also blocks screenshots of OTP, finance and chat screens.", hideOtp) {
-            scope.launch { s.setHideOtpInNotifications(it) }
+        Toggle("Hide OTPs in notifications", "Keep codes out of notification text entirely (use Copy). Also blocks screenshots of OTP, finance and chat screens.", hideOtp) { on ->
+            if (on) scope.launch { s.setHideOtpInNotifications(true) }
+            else reauth("Show OTPs in notifications") { scope.launch { s.setHideOtpInNotifications(false) } }
         }
-        Toggle("Hide notifications on lock screen", "Messages, codes and bill reminders never appear on the lock screen, even if your phone is set to show sensitive content. You still get the sound/vibration.", hideLock) {
-            scope.launch { s.setHideOnLockScreen(it) }
+        Toggle("Hide notifications on lock screen", "Messages, codes and bill reminders never appear on the lock screen, even if your phone is set to show sensitive content. You still get the sound/vibration.", hideLock) { on ->
+            if (on) scope.launch { s.setHideOnLockScreen(true) }
+            else reauth("Show notifications on the lock screen") { scope.launch { s.setHideOnLockScreen(false) } }
         }
-        Toggle("Confirm before sending", "Show a final check (recipient, SIM, text) before any message is sent.", confirmSend) {
-            scope.launch { s.setConfirmBeforeSend(it) }
+        Toggle("Confirm before sending", "Show a final check (recipient, SIM, text) before any message is sent.", confirmSend) { on ->
+            // Turning confirmation off enables one-tap send: needs a fresh authentication.
+            if (on) scope.launch { s.setConfirmBeforeSend(true) }
+            else reauth("Turn off send confirmation") { scope.launch { s.setConfirmBeforeSend(false) } }
         }
 
         Section("Notifications")
@@ -126,7 +135,11 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
             "Show names on home-screen widget",
             "Off: the widget shows unread counts only. Names are always hidden while app lock is on; message text and codes are never shown.",
             widgetNames,
-        ) { scope.launch { s.setWidgetShowNames(it); app.privateinbox.widget.InboxWidget.requestUpdate(context) } }
+        ) { on ->
+            val apply = { scope.launch { s.setWidgetShowNames(on); app.privateinbox.widget.InboxWidget.requestUpdate(context) }; Unit }
+            // Showing contact names on the home screen is a privacy downgrade: needs a fresh authentication.
+            if (on) reauth("Show names on the home-screen widget", apply) else apply()
+        }
 
         Section("Inbox")
         Nav("Smart inbox rules", "See and edit how messages are sorted") { onNavigate(SettingsDest.RULES) }

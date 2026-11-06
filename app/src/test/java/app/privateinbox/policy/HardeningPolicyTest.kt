@@ -34,6 +34,22 @@ class HardeningPolicyTest {
         assertTrue(src("notifications/MessageNotifier.kt").contains("VISIBILITY_SECRET"))
     }
 
+    @Test fun privacyDowngradesInSettingsNeedFreshAuth() {
+        val settings = src("ui/settings/SettingsScreen.kt")
+        val guarded = mapOf(
+            "setConfirmBeforeSend(false)" to "reauth(\"Turn off send confirmation\")",
+            "setHideOtpInNotifications(false)" to "reauth(\"Show OTPs in notifications\")",
+            "setHideOnLockScreen(false)" to "reauth(\"Show notifications on the lock screen\")",
+        )
+        guarded.forEach { (call, gate) ->
+            val line = settings.lines().firstOrNull { call in it }
+            assertTrue("$call must exist", line != null)
+            assertTrue("$call must run only inside $gate", line!!.contains(gate))
+        }
+        assertTrue("widget names opt-in must be gated", settings.contains("if (on) reauth(\"Show names on the home-screen widget\", apply) else apply()"))
+        assertTrue("reauth must use AppLock.requireFreshAuth", settings.contains("AppLock.requireFreshAuth(activity, reason"))
+    }
+
     @Test fun mmsReceiversCatchThrowable() {
         assertTrue(src("sms/MmsReceiver.kt").contains("catch (t: Throwable)"))
         assertTrue(src("sms/MmsDownloadedReceiver.kt").contains("catch (t: Throwable)"))

@@ -76,22 +76,23 @@ object IntentTriage {
 
     private val RECIPIENT = Regex("^\\+?[0-9A-Za-z .()\\-]{2,32}$")
 
-    fun triage(intent: ExternalIntent, ownAuthorities: Set<String>): TriageResult {
+    /** [currentUserId]: our Android user; only that `N@` prefix is tolerated on shared URIs (null = none). */
+    fun triage(intent: ExternalIntent, ownAuthorities: Set<String>, currentUserId: Int? = null): TriageResult {
         val autoSendIgnored = intent.extraKeys.any { k -> AUTO_SEND_EXTRAS.any { it.equals(k, ignoreCase = true) } }
         return when (intent.action) {
             null, ACTION_MAIN -> TriageResult.OpenApp
-            ACTION_SENDTO, ACTION_VIEW -> fromSmsUri(intent, ownAuthorities, autoSendIgnored)
+            ACTION_SENDTO, ACTION_VIEW -> fromSmsUri(intent, ownAuthorities, currentUserId, autoSendIgnored)
             ACTION_SEND, ACTION_SEND_MULTIPLE ->
                 if (intent.dataUri != null && schemeOf(intent.dataUri) in SMS_SCHEMES) {
-                    fromSmsUri(intent, ownAuthorities, autoSendIgnored)
+                    fromSmsUri(intent, ownAuthorities, currentUserId, autoSendIgnored)
                 } else {
-                    TriageResult.Prefill(build(emptyList(), intent, ownAuthorities, autoSendIgnored, uriBody = null))
+                    TriageResult.Prefill(build(emptyList(), intent, ownAuthorities, currentUserId, autoSendIgnored, uriBody = null))
                 }
             else -> TriageResult.Ignore("unsupported action")
         }
     }
 
-    private fun fromSmsUri(intent: ExternalIntent, own: Set<String>, autoSend: Boolean): TriageResult {
+    private fun fromSmsUri(intent: ExternalIntent, own: Set<String>, userId: Int?, autoSend: Boolean): TriageResult {
         val uri = intent.dataUri ?: return TriageResult.Ignore("missing data uri")
         val scheme = schemeOf(uri) ?: return TriageResult.Ignore("missing scheme")
         if (scheme !in SMS_SCHEMES) return TriageResult.Ignore("unsupported scheme")
@@ -105,13 +106,14 @@ object IntentTriage {
             .split(',', ';')
             .map { it.trim().removePrefix("//") }
             .filter { it.isNotEmpty() }
-        return TriageResult.Prefill(build(recipients, intent, own, autoSend, uriBody))
+        return TriageResult.Prefill(build(recipients, intent, own, userId, autoSend, uriBody))
     }
 
     private fun build(
         recipients: List<String>,
         intent: ExternalIntent,
         own: Set<String>,
+        userId: Int?,
         autoSend: Boolean,
         uriBody: String?,
     ): ComposePrefill {
@@ -120,7 +122,7 @@ object IntentTriage {
         val accepted = mutableListOf<String>()
         val rejected = mutableListOf<Pair<String, UriDecision.Reject>>()
         intent.streamUris.take(MAX_ATTACHMENTS).forEach { u ->
-            when (val d = AttachmentPolicy.checkUri(u, own)) {
+            when (val d = AttachmentPolicy.checkUri(u, own, userId)) {
                 UriDecision.Accept -> accepted += u
                 is UriDecision.Reject -> rejected += u to d
             }

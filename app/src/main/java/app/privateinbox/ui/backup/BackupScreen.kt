@@ -24,10 +24,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import app.privateinbox.backup.BackupCrypto
+import app.privateinbox.backup.BackupPasswordPolicy
 import app.privateinbox.security.SafeLog
 import app.privateinbox.ui.common.LocalContainer
 import app.privateinbox.ui.common.SubScreen
+import app.privateinbox.ui.lock.AppLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -42,7 +45,9 @@ fun BackupScreen(onBack: () -> Unit) {
     var confirm by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    val pwOk = password.length >= BackupCrypto.MIN_PASSWORD
+    // New backups need a strong password (F-11); restoring accepts any password so older backups still open.
+    val pwProblem = remember(password) { BackupPasswordPolicy.check(password.toCharArray()) }
+    val activity = context as? FragmentActivity
 
     val create = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -93,7 +98,7 @@ fun BackupScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
             )
             OutlinedTextField(
-                password, { password = it }, label = { Text("Backup password (min ${BackupCrypto.MIN_PASSWORD})") },
+                password, { password = it }, label = { Text("Backup password (min ${BackupCrypto.MIN_PASSWORD} characters)") },
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(),
             )
@@ -102,14 +107,32 @@ fun BackupScreen(onBack: () -> Unit) {
                 singleLine = true, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth(),
             )
+            if (password.isNotEmpty() && pwProblem != null) {
+                Text(
+                    "${pwProblem.message} (Needed for new backups; restoring an older backup accepts its original password.)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            } else if (confirm.isNotEmpty() && password != confirm) {
+                Text("Passwords don't match.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
             Button(
-                enabled = !busy && pwOk && password == confirm,
-                onClick = { create.launch("privateinbox-${LocalDate.now()}.pibk") },
+                enabled = !busy && pwProblem == null && password == confirm,
+                onClick = {
+                    // F-02: exporting the whole history needs a fresh authentication.
+                    AppLock.requireFreshAuth(activity, "Create an encrypted backup", onError = { status = it }) {
+                        create.launch("privateinbox-${LocalDate.now()}.pibk")
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Create backup file") }
             OutlinedButton(
-                enabled = !busy && pwOk,
-                onClick = { open.launch(arrayOf("application/octet-stream", "*/*")) },
+                enabled = !busy && password.isNotEmpty(),
+                onClick = {
+                    AppLock.requireFreshAuth(activity, "Restore a backup", onError = { status = it }) {
+                        open.launch(arrayOf("application/octet-stream", "*/*"))
+                    }
+                },
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Restore from file") }
             if (busy) CircularProgressIndicator()

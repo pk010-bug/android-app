@@ -19,7 +19,7 @@ and login codes. These rules exist so that data can never become someone else's.
 | Attachments | Only `content://` from other apps. `file://` and URIs from our own FileProvider/package are refused. Images are identified by their bytes, capped at 5 MiB, and copied into private storage immediately. |
 | Lock-screen-safe OTPs | Codes never appear on the lock screen. With "Hide OTPs" on (default) notifications are secret on the lock screen and omit the digits entirely. Copied codes are flagged sensitive (Android 13+). |
 | Screenshot blocking | `FLAG_SECURE` on OTP, finance and conversation screens when app lock or "Hide OTPs" is on. |
-| Backups you control | Backups are created only when you ask, encrypted with your password (PBKDF2-HMAC-SHA256, 310k iterations → AES-256-GCM, header authenticated), and saved only where you choose with the system file picker. The app never uploads them. |
+| Backups you control | Backups are created only when you ask, encrypted with your password (PBKDF2-HMAC-SHA256, 600k iterations → AES-256-GCM, header with KDF parameters authenticated; new backups need a strong 12+ character password, older 310k backups still restore), and saved only where you choose with the system file picker. The app never uploads them. |
 | Blocking & scam checks are local | Block lists, rules, and scam heuristics run on-device; there are no reputation lookups. |
 | Minimal exported surface | Only the main activity and the three components the SMS role needs are reachable by other apps, each guarded by a system-only permission. |
 
