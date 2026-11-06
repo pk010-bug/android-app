@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    PrivateInbox manifest.
+
+    PRIVACY: this app intentionally does NOT request android.permission.INTERNET.
+    Without it the OS blocks every socket this process could open, so no SMS,
+    contact, or financial data can leave the device. The tools:node="remove"
+    entry below also strips INTERNET if any library ever tries to merge it in, and the
+    verify<Variant>ManifestPermissions Gradle task fails the build if it is ever present.
+
+    EXPORTED SURFACE (keep minimal, see SECURITY.md):
+      exported   MainActivity              launcher + SENDTO/SEND (required by the SMS role)
+      exported   sms.SmsReceiver           permission BROADCAST_SMS (system only)
+      exported   sms.MmsReceiver           permission BROADCAST_WAP_PUSH (system only)
+      exported   sms.HeadlessSmsSendService permission SEND_RESPOND_VIA_MESSAGE (system only)
+      library    WorkManager SystemJobService: permission BIND_JOB_SERVICE (system only)
+      private    everything else (FileProvider, SmsSentReceiver, CopyOtpReceiver, AndroidX receivers)
+
+    CALLS: CALL_PHONE is intentionally NOT requested. Calls go through ACTION_DIAL only.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Explicitly refuse network access, even if a dependency requests it. -->
+    <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <!-- No direct calling: the dialer is opened with ACTION_DIAL instead. -->
+    <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove" />
+
+    <!-- SMS / MMS permissions needed to act as the default SMS app. -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.RECEIVE_MMS" />
+    <uses-permission android:name="android.permission.RECEIVE_WAP_PUSH" />
+    <!-- Show sender names from the local address book (read-only, never uploaded). -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Local notifications for new messages / OTPs (Android 13+). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+
+    <application
+        android:name=".PrivateInboxApp"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PrivateInbox"
+        tools:targetApi="35">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+                Required for the default SMS role: handle "compose message" intents.
+                SECURITY: these only PREFILL the composer (compose/IntentTriage.kt). Never auto-send.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SENDTO" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+            <!-- Share sheet: text or images become a draft only. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+        </activity>
+
+        <!-- Internal only: sent-status callbacks via our immutable explicit PendingIntent. -->
+        <receiver
+            android:name=".sms.SmsSentReceiver"
+            android:exported="false" />
+
+        <!-- Internal only: "Copy" action on OTP notifications. -->
+        <receiver
+            android:name=".notifications.CopyOtpReceiver"
+            android:exported="false" />
+
+        <!--
+            Library components locked down: these AndroidX receivers ship exported (DUMP-protected)
+            for adb tooling. We don't need that, so force them private. WorkManager's
+            SystemJobService stays as shipped: it is guarded by BIND_JOB_SERVICE (system only).
+        -->
+        <receiver
+            android:name="androidx.work.impl.diagnostics.DiagnosticsReceiver"
+            android:exported="false"
+            tools:replace="android:exported" />
+        <receiver
+            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+            android:exported="false"
+            tools:ignore="MissingClass"
+            tools:replace="android:exported" />
+
+        <!--
+            Not exported. Only per-URI grants (FLAG_GRANT_READ_URI_PERMISSION) can open it.
+            URIs with this authority arriving FROM other apps are rejected by AttachmentPolicy.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- TODO(sms): persist incoming SMS to the provider + Room, run RuleEngine/OtpExtractor. -->
+        <receiver
+            android:name=".sms.SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.SMS_DELIVER" />
+            </intent-filter>
+        </receiver>
+
+        <!-- TODO(mms): MMS is out of MVP scope; stub keeps the default-SMS role eligible. -->
+        <receiver
+            android:name=".sms.MmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_WAP_PUSH">
+            <intent-filter>
+                <action android:name="android.provider.Telephony.WAP_PUSH_DELIVER" />
+                <data android:mimeType="application/vnd.wap.mms-message" />
+            </intent-filter>
+        </receiver>
+
+        <!-- TODO(sms): implement "quick reply" from the incoming-call screen. -->
+        <service
+            android:name=".sms.HeadlessSmsSendService"
+            android:exported="true"
+            android:permission="android.permission.SEND_RESPOND_VIA_MESSAGE">
+            <intent-filter>
+                <action android:name="android.intent.action.RESPOND_VIA_MESSAGE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="sms" />
+                <data android:scheme="smsto" />
+                <data android:scheme="mms" />
+                <data android:scheme="mmsto" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

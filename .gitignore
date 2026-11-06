@@ -1,0 +1,26 @@
+# Gradle / Android Studio
+.gradle/
+build/
+/captures
+.externalNativeBuild/
+.cxx/
+local.properties
+*.iml
+.idea/
+.DS_Store
+.kotlin/
+
+# Outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+/app/release/
+
+# Signing material — never commit
+*.jks
+*.keystore
+keystore.properties
+
+# Logs
+*.log

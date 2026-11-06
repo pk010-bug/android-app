@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "_readme": "Starter rules for PrivateInbox. Rules run by descending priority; first match wins. Patterns are case-insensitive Java regexes. A rule matches when a senderPattern matches (if any are listed) AND a bodyPattern matches (if any are listed) AND no excludeBodyPattern matches.",
+  "rules": [
+    {
+      "id": "otp-keyword",
+      "category": "OTP",
+      "priority": 100,
+      "description": "One-time passwords and verification codes",
+      "bodyPatterns": [
+        "\\b(otp|one[ -]?time[ -]?pass(word|code)?|verification code|security code|login code)\\b[^\\n]{0,40}\\b\\d{4,8}\\b",
+        "\\b\\d{4,8}\\b\\s+is\\s+(your|the)\\s+(otp|verification code|code)\\b"
+      ]
+    },
+    {
+      "id": "spam-prize",
+      "category": "Spam",
+      "priority": 90,
+      "description": "Lottery / prize / KYC-scare messages",
+      "bodyPatterns": [
+        "\\b(you have won|you've won|lucky draw|lottery|claim your (prize|reward))\\b",
+        "\\bkyc\\b[^\\n]{0,40}\\b(suspend|block|expire)",
+        "\\b(account|card)\\b[^\\n]{0,30}\\bwill be (blocked|suspended)\\b[^\\n]{0,60}(bit\\.ly|tinyurl|click)"
+      ]
+    },
+    {
+      "id": "important-bank",
+      "category": "Important",
+      "priority": 80,
+      "description": "Bank debits/credits and account alerts",
+      "bodyPatterns": [
+        "\\b(debited|credited|withdrawn|spent)\\b[^\\n]{0,60}\\b(a/c|acct|account|card)\\b",
+        "\\b(a/c|acct|account|card)\\b[^\\n]{0,60}\\b(debited|credited)\\b"
+      ],
+      "excludeBodyPatterns": ["\\b(offer|cashback upto|pre-approved)\\b"]
+    },
+    {
+      "id": "important-bills",
+      "category": "Important",
+      "priority": 75,
+      "description": "Bills, dues, deliveries and appointments",
+      "bodyPatterns": [
+        "\\bbill\\b[^\\n]{0,60}\\b(due|overdue|generated)\\b",
+        "\\b(emi|premium|payment)\\b[^\\n]{0,30}\\bdue\\b",
+        "\\b(out for delivery|has been delivered|has been shipped)\\b",
+        "\\bappointment\\b[^\\n]{0,40}\\b(confirmed|scheduled|reminder)\\b"
+      ]
+    },
+    {
+      "id": "promo-keywords",
+      "category": "Promotional",
+      "priority": 70,
+      "description": "Marketing from business senders",
+      "bodyPatterns": [
+        "\\b(sale|offer|discount|cashback|coupon|deal|shop now|limited time)\\b",
+        "\\d{1,2}\\s?% off",
+        "\\b(sms stop|reply stop|to unsubscribe|dnd)\\b"
+      ]
+    },
+    {
+      "id": "personal-phone",
+      "category": "Personal",
+      "priority": 50,
+      "description": "Messages from real phone numbers (not short codes / headers)",
+      "senderPatterns": ["^\\+?\\d[\\d \\-]{6,15}$"]
+    }
+  ]
+}

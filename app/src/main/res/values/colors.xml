@@ -1,0 +1,6 @@
+<resources>
+    <color name="brand_teal">#FF00796B</color>
+    <color name="brand_indigo">#FF3949AB</color>
+    <color name="window_light">#FFF7FAFA</color>
+    <color name="window_dark">#FF0E1416</color>
+</resources>
