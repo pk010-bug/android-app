@@ -72,7 +72,8 @@ fun BackupScreen(onBack: () -> Unit) {
                     }
                 } ?: error("cannot read file")
                 val r = c.backup.restore(blob, password.toCharArray())
-                "Restored ${r.messages} new message(s) across ${r.conversations} conversation(s), ${r.rules} rule(s)."
+                "Restored ${r.messages} new message(s) across ${r.conversations} conversation(s), ${r.rules} rule(s), " +
+                    "${r.media} attachment(s), ${r.paidBills} paid bill(s)."
             } catch (e: BackupCrypto.BadPasswordOrCorrupt) {
                 "Wrong password or damaged file."
             } catch (e: Exception) {

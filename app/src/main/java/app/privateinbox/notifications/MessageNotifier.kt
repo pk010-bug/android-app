@@ -34,6 +34,38 @@ class MessageNotifier(private val context: Context) {
         )
     }
 
+    // ---- Per-conversation channels (sound / vibration / importance chosen in system settings) --
+
+    fun conversationChannelId(conversationId: Long) = "conv_$conversationId"
+
+    fun hasCustomChannel(conversationId: Long): Boolean =
+        context.getSystemService(NotificationManager::class.java)?.getNotificationChannel(conversationChannelId(conversationId)) != null
+
+    /**
+     * Creates a channel for one conversation, inheriting the private lock-screen policy. [label]
+     * appears only in system notification settings; callers pass a contact name or a masked number.
+     */
+    fun createCustomChannel(conversationId: Long, label: String) {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        ensureChannels()
+        val ch = NotificationChannel(conversationChannelId(conversationId), label.take(40), NotificationManager.IMPORTANCE_HIGH).apply {
+            lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+            group = null
+            if (Build.VERSION.SDK_INT >= 30) setConversationId(CHANNEL_MESSAGES, conversationId.toString())
+        }
+        nm.createNotificationChannel(ch)
+    }
+
+    fun deleteCustomChannel(conversationId: Long) {
+        context.getSystemService(NotificationManager::class.java)?.deleteNotificationChannel(conversationChannelId(conversationId))
+    }
+
+    /** System screen where the user picks the sound etc. for that conversation. */
+    fun channelSettingsIntent(conversationId: Long): Intent =
+        Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+            .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, conversationChannelId(conversationId))
+
     fun showMessage(conversationId: Long, title: String, text: String, suspicious: Boolean) {
         if (Build.VERSION.SDK_INT >= 33 &&
             context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -42,11 +74,12 @@ class MessageNotifier(private val context: Context) {
         }
         ensureChannels()
         val open = openRoute("conversation/$conversationId", conversationId.toInt())
-        val public = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+        val public = NotificationCompat.Builder(context, if (hasCustomChannel(conversationId)) conversationChannelId(conversationId) else CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lock)
             .setContentTitle("New message")
             .build()
-        val n = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+        val channel = if (hasCustomChannel(conversationId)) conversationChannelId(conversationId) else CHANNEL_MESSAGES
+        val n = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_lock)
             .setContentTitle(if (suspicious) "Possible scam · $title" else title)
             .setContentText(text)

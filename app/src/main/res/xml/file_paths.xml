@@ -4,4 +4,6 @@
     <cache-path name="outbound_share" path="share/" />
     <!-- Scratch PDUs exchanged with the system MMS service; deleted after each callback. -->
     <cache-path name="mms_pdu" path="mms/" />
+    <!-- Short-lived copies of received media the user explicitly chose to "Open with…". -->
+    <cache-path name="open_media" path="open/" />
 </paths>

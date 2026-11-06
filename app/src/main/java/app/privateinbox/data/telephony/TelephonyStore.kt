@@ -96,6 +96,111 @@ class TelephonyStore(private val context: Context) {
         runCatching { resolver.delete(Uri.withAppendedPath(Telephony.Sms.CONTENT_URI, providerId.toString()), null, null) }
     }
 
+    // ---- MMS mirror (so other SMS apps / backups see the same history) -------------------
+
+    /** One part to mirror: text inline, or a file streamed into the provider. */
+    data class MmsMirrorPart(val mimeType: String, val text: String? = null, val file: java.io.File? = null)
+
+    /**
+     * Writes an MMS into the system store (content://mms). [incoming]: [from] is the sender; else
+     * [to] are the recipients and the MMSC fills in our own number. Returns the provider id.
+     * Best effort: any provider error leaves our encrypted copy untouched.
+     */
+    fun insertMms(
+        incoming: Boolean,
+        from: String?,
+        to: List<String>,
+        subject: String?,
+        date: Long,
+        read: Boolean,
+        subscriptionId: Int?,
+        parts: List<MmsMirrorPart>,
+    ): Long? {
+        if (!canWrite()) return null
+        return try {
+            val addresses = (listOfNotNull(from) + to).filter { it.isNotBlank() }.toSet()
+            if (addresses.isEmpty()) return null
+            val threadId = Telephony.Threads.getOrCreateThreadId(context, addresses)
+            val values = ContentValues().apply {
+                put(Telephony.Mms.THREAD_ID, threadId)
+                put(Telephony.Mms.DATE, date / 1000)
+                put(Telephony.Mms.DATE_SENT, date / 1000)
+                put(Telephony.Mms.READ, if (read) 1 else 0)
+                put(Telephony.Mms.SEEN, if (read) 1 else 0)
+                put(Telephony.Mms.MESSAGE_BOX, if (incoming) Telephony.Mms.MESSAGE_BOX_INBOX else Telephony.Mms.MESSAGE_BOX_OUTBOX)
+                put(Telephony.Mms.MESSAGE_TYPE, if (incoming) MMS_TYPE_RETRIEVE_CONF else MMS_TYPE_SEND_REQ)
+                put(Telephony.Mms.MMS_VERSION, MMS_VERSION_1_2)
+                put(Telephony.Mms.CONTENT_TYPE, "application/vnd.wap.multipart.related")
+                put(Telephony.Mms.TEXT_ONLY, if (parts.all { it.file == null }) 1 else 0)
+                subject?.let { put(Telephony.Mms.SUBJECT, it); put(Telephony.Mms.SUBJECT_CHARSET, UTF8) }
+                subscriptionId?.let { put(Telephony.Mms.SUBSCRIPTION_ID, it) }
+            }
+            val id = resolver.insert(Telephony.Mms.CONTENT_URI, values)?.lastPathSegment?.toLongOrNull() ?: return null
+            val partUri = Uri.parse("content://mms/$id/part")
+            parts.forEachIndexed { i, p ->
+                val name = if (p.text != null) "text_$i.txt" else "part_$i.${p.file?.extension ?: "bin"}"
+                val pv = ContentValues().apply {
+                    put(Telephony.Mms.Part.MSG_ID, id)
+                    put(Telephony.Mms.Part.CONTENT_TYPE, p.mimeType)
+                    put(Telephony.Mms.Part.CONTENT_ID, "<$name>")
+                    put(Telephony.Mms.Part.CONTENT_LOCATION, name)
+                    if (p.text != null) {
+                        put(Telephony.Mms.Part.CHARSET, UTF8)
+                        put(Telephony.Mms.Part.TEXT, p.text)
+                    }
+                }
+                val uri = resolver.insert(partUri, pv) ?: return@forEachIndexed
+                p.file?.let { f -> resolver.openOutputStream(uri)?.use { out -> f.inputStream().use { it.copyTo(out) } } }
+            }
+            val addrUri = Uri.parse("content://mms/$id/addr")
+            fun addr(a: String, type: Int) = resolver.insert(
+                addrUri,
+                ContentValues().apply {
+                    put(Telephony.Mms.Addr.MSG_ID, id)
+                    put(Telephony.Mms.Addr.ADDRESS, a)
+                    put(Telephony.Mms.Addr.TYPE, type)
+                    put(Telephony.Mms.Addr.CHARSET, UTF8)
+                },
+            )
+            addr(if (incoming) from ?: INSERT_ADDRESS_TOKEN else INSERT_ADDRESS_TOKEN, PDU_FROM)
+            to.forEach { addr(it, PDU_TO) }
+            id
+        } catch (e: Exception) {
+            SafeLog.e(TAG, "mms provider insert failed", e)
+            null
+        }
+    }
+
+    fun markMmsSent(providerId: Long, success: Boolean) {
+        if (!canWrite()) return
+        val box = if (success) Telephony.Mms.MESSAGE_BOX_SENT else Telephony.Mms.MESSAGE_BOX_FAILED
+        runCatching {
+            resolver.update(
+                Uri.withAppendedPath(Telephony.Mms.CONTENT_URI, providerId.toString()),
+                ContentValues().apply { put(Telephony.Mms.MESSAGE_BOX, box) }, null, null,
+            )
+        }
+    }
+
+    fun markMmsRead(providerIds: List<Long>) {
+        if (!canWrite() || providerIds.isEmpty()) return
+        runCatching {
+            providerIds.chunked(200).forEach { chunk ->
+                resolver.update(
+                    Telephony.Mms.CONTENT_URI,
+                    ContentValues().apply { put(Telephony.Mms.READ, 1); put(Telephony.Mms.SEEN, 1) },
+                    "${Telephony.Mms._ID} IN (${chunk.joinToString(",") { "?" }})",
+                    chunk.map(Long::toString).toTypedArray(),
+                )
+            }
+        }
+    }
+
+    fun deleteMms(providerId: Long) {
+        if (!canWrite()) return
+        runCatching { resolver.delete(Uri.withAppendedPath(Telephony.Mms.CONTENT_URI, providerId.toString()), null, null) }
+    }
+
     /** Reads SMS rows with _id > [afterId], oldest first, at most [limit]. */
     fun readSince(afterId: Long, limit: Int): List<ProviderSms> {
         if (!canRead()) return emptyList()
@@ -166,5 +271,12 @@ class TelephonyStore(private val context: Context) {
 
     private companion object {
         const val TAG = "TelephonyStore"
+        const val UTF8 = 106
+        const val MMS_TYPE_SEND_REQ = 128
+        const val MMS_TYPE_RETRIEVE_CONF = 132
+        const val MMS_VERSION_1_2 = 0x12
+        const val PDU_FROM = 137
+        const val PDU_TO = 151
+        const val INSERT_ADDRESS_TOKEN = "insert-address-token"
     }
 }

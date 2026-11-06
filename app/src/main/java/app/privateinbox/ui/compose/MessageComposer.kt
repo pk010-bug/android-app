@@ -147,9 +147,13 @@ fun MessageComposer(
     fun doSchedule(confirmation: UserSendConfirmation, at: Long) {
         val to = recipients()
         val body = text
+        val image = attachment
         scope.launch {
-            status = when (val r = sender.schedule(confirmation, to, body, at, activeSub)) {
-                is SmsSender.Result.Scheduled -> { text = ""; onSent(r.conversationId); null }
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                sender.schedule(confirmation, to, body, at, activeSub, image)
+            }
+            status = when (val r = result) {
+                is SmsSender.Result.Scheduled -> { text = ""; attachment = null; onSent(r.conversationId); null }
                 is SmsSender.Result.Queued -> null
                 is SmsSender.Result.Refused -> "Not scheduled: ${r.reason}"
             }
@@ -199,7 +203,7 @@ fun MessageComposer(
                     modifier = Modifier.weight(1f),
                     maxLines = 5,
                 )
-                IconButton(enabled = ready && attachment == null, onClick = {
+                IconButton(enabled = ready, onClick = {
                     if (!hasSmsPerm()) smsPerm.launch(Manifest.permission.SEND_SMS) else pickDate = true
                 }) { Icon(Icons.Outlined.Schedule, contentDescription = "Schedule") }
                 FilledIconButton(

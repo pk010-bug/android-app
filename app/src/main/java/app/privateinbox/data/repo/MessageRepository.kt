@@ -102,7 +102,7 @@ class MessageRepository(
                 address = address,
                 displayName = conv.displayName ?: telephony.contactName(address),
                 category = category,
-                lastMessagePreview = preview(body.ifBlank { if (isMms) "Photo" else "" }),
+                lastMessagePreview = preview(body.ifBlank { if (isMms) "Attachment" else "" }),
                 lastMessageAt = maxOf(conv.lastMessageAt, timestamp),
                 unreadCount = if (read) conv.unreadCount else conv.unreadCount + 1,
                 scamScore = maxOf(conv.scamScore, scam.score),
@@ -175,6 +175,30 @@ class MessageRepository(
 
     suspend fun addMmsPart(part: app.privateinbox.data.db.MmsPartEntity) = db.mmsPartDao().insert(part)
 
+    /** Resolves a stored MMS media name to its private file (set by AppContainer). */
+    var mediaFile: (String?) -> java.io.File? = { null }
+
+    /** Invoked after any change that affects unread counts (used to refresh the widget). */
+    var onUnreadChanged: () -> Unit = {}
+
+    /**
+     * Mirrors one of our MMS messages into the system MMS store and remembers the provider id.
+     * Our encrypted copy remains the source of truth for the UI.
+     */
+    suspend fun mirrorMms(messageId: Long, from: String?, to: List<String>) {
+        val m = messages.getById(messageId) ?: return
+        if (!m.isMms || m.providerId != null) return
+        val parts = db.mmsPartDao().forMessage(messageId).map {
+            TelephonyStore.MmsMirrorPart(it.mimeType, it.text, mediaFile(it.fileName))
+        }.filter { it.text != null || it.file != null }
+        val all = (if (m.body.isNotBlank()) listOf(TelephonyStore.MmsMirrorPart("text/plain", m.body)) else emptyList()) + parts
+        val id = telephony.insertMms(
+            incoming = m.incoming, from = from, to = to, subject = m.mmsSubject?.takeUnless { it.startsWith("Group MMS") },
+            date = m.timestamp, read = m.read, subscriptionId = m.subscriptionId, parts = all,
+        ) ?: return
+        messages.updateStatus(messageId, m.status, id)
+    }
+
     /** Imports an already-sent message from the provider. */
     suspend fun importOutgoing(p: TelephonyStore.ProviderSms) {
         db.withTransaction {
@@ -199,18 +223,23 @@ class MessageRepository(
      */
     suspend fun updateSendStatus(messageId: Long, success: Boolean, providerId: Long? = null) {
         val msg = messages.getById(messageId) ?: return
-        (providerId ?: msg.providerId)?.let { telephony.markSent(it, success) }
+        if (msg.isMms) {
+            msg.providerId?.let { telephony.markMmsSent(it, success) }
+        } else {
+            (providerId ?: msg.providerId)?.let { telephony.markSent(it, success) }
+        }
         if (success && msg.status == MessageStatus.FAILED) return
         messages.updateStatus(messageId, if (success) MessageStatus.SENT else MessageStatus.FAILED, null)
     }
 
     suspend fun markConversationRead(conversationId: Long) {
-        val unreadProviderIds = messages.getAllVisible()
+        val unread = messages.getAllVisible()
             .filter { it.conversationId == conversationId && !it.read && it.providerId != null }
-            .mapNotNull { it.providerId }
         messages.markConversationRead(conversationId)
         conversations.markRead(conversationId)
-        telephony.markRead(unreadProviderIds)
+        telephony.markRead(unread.filter { !it.isMms }.mapNotNull { it.providerId })
+        telephony.markMmsRead(unread.filter { it.isMms }.mapNotNull { it.providerId })
+        if (unread.isNotEmpty()) onUnreadChanged()
     }
 
     // ---- Recycle bin ------------------------------------------------------------------------
@@ -225,6 +254,7 @@ class MessageRepository(
     suspend fun deleteConversation(conversationId: Long) {
         messages.softDeleteConversation(conversationId, clock())
         refreshConversation(conversationId)
+        onUnreadChanged()
     }
 
     suspend fun restoreMessages(ids: List<Long>) {
@@ -240,7 +270,7 @@ class MessageRepository(
     suspend fun purge(ids: List<Long>) {
         val rows = ids.mapNotNull { messages.getById(it) }
         db.mmsPartDao().forMessages(rows.filter { it.isMms }.map { it.id }).mapNotNull { it.fileName }.let(deleteMediaFiles)
-        rows.forEach { it.providerId?.let(telephony::delete) }
+        rows.forEach { m -> m.providerId?.let { if (m.isMms) telephony.deleteMms(it) else telephony.delete(it) } }
         messages.hardDelete(rows.map { it.id })
         rows.map { it.conversationId }.toSet().forEach { refreshConversation(it) }
     }

@@ -111,7 +111,28 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
                     DropdownMenuItem(text = { Text(if (c.muted) "Unmute" else "Mute notifications") }, onClick = { act { container.messages.setMuted(c.id, !c.muted) } })
                     DropdownMenuItem(text = { Text("Move to category…") }, onClick = { menu = false; moveMenu = true })
                     if (!c.isGroup) DropdownMenuItem(text = { Text("Block sender") }, onClick = { act { container.messages.block(c.id); onBack() } })
-                    DropdownMenuItem(text = { Text("Delete conversation") }, onClick = { act { container.messages.deleteConversation(c.id); onBack() } })
+                    val custom = remember(menu) { container.messageNotifier.hasCustomChannel(c.id) }
+                    DropdownMenuItem(
+                        text = { Text(if (custom) "Notification sound & settings…" else "Custom notification sound…") },
+                        onClick = {
+                            menu = false
+                            if (!custom) {
+                                val label = c.displayName ?: if (c.isGroup) "Group conversation" else "Conversation ••${c.address.filter(Char::isDigit).takeLast(4)}"
+                                container.messageNotifier.createCustomChannel(c.id, label)
+                            }
+                            runCatching { context.startActivity(container.messageNotifier.channelSettingsIntent(c.id)) }
+                        },
+                    )
+                    if (custom) {
+                        DropdownMenuItem(text = { Text("Use default notifications") }, onClick = {
+                            menu = false
+                            container.messageNotifier.deleteCustomChannel(c.id)
+                        })
+                    }
+                    DropdownMenuItem(text = { Text("Delete conversation") }, onClick = {
+                        container.messageNotifier.deleteCustomChannel(c.id)
+                        act { container.messages.deleteConversation(c.id); onBack() }
+                    })
                 }
             }
             DropdownMenu(expanded = moveMenu, onDismissRequest = { moveMenu = false }) {
@@ -208,7 +229,7 @@ private fun Bubble(m: MessageEntity, parts: List<app.privateinbox.data.db.MmsPar
                 .padding(12.dp),
         ) {
             m.mmsSubject?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
-            parts.filter { it.fileName != null }.forEach { MmsImage(it) }
+            parts.filter { it.fileName != null }.forEach { if (it.mimeType.startsWith("image/")) MmsImage(it) else MediaChip(it) }
             if (m.body.isNotEmpty()) SelectionContainer { Text(m.body, style = MaterialTheme.typography.bodyLarge) }
             m.otpCode?.let { code ->
                 AssistChip(
@@ -307,5 +328,40 @@ private fun MmsViewer(part: app.privateinbox.data.db.MmsPartEntity, onDismiss: (
                 )
             }
         }
+    }
+}
+
+/**
+ * Non-image media (video / audio / contact card): never rendered or auto-opened. One explicit tap
+ * plus a confirmation hands a short-lived private copy to an app the user picks.
+ */
+@Composable
+private fun MediaChip(part: app.privateinbox.data.db.MmsPartEntity) {
+    val context = LocalContext.current
+    val container = LocalContainer.current
+    var confirm by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf(false) }
+    val kind = when {
+        part.mimeType.startsWith("video/") -> "Video"
+        part.mimeType.startsWith("audio/") -> "Audio"
+        part.mimeType.contains("vcard") -> "Contact card"
+        else -> "File"
+    }
+    val size = if (part.sizeBytes >= 1_048_576) "%.1f MB".format(part.sizeBytes / 1_048_576.0) else "${(part.sizeBytes / 1024).coerceAtLeast(1)} KB"
+    AssistChip(onClick = { confirm = true }, label = { Text("$kind · $size · Open…") })
+    if (error) Text("No app on this phone can open it.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+    if (confirm) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Open $kind with another app?") },
+            text = { Text("The app you choose will be able to read this ${kind.lowercase()}. PrivateInbox never opens attachments automatically.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    confirm = false
+                    error = !app.privateinbox.mms.MediaOpener.open(context, container.mmsStore, part.fileName)
+                }) { Text("Choose app") }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+        )
     }
 }

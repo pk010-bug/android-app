@@ -23,26 +23,30 @@ class ScheduledSendAuthorizer(private val mac: MacProvider = KeystoreMac()) {
 
     fun interface MacProvider { fun mac(data: ByteArray): ByteArray }
 
-    fun sign(row: ScheduledMessageEntity): String =
-        Base64.getEncoder().withoutPadding().encodeToString(mac.mac(canonical(row)))
+    /** [attachment] must be the exact bytes that will be sent (null for SMS). */
+    fun sign(row: ScheduledMessageEntity, attachment: ByteArray? = null): String =
+        Base64.getEncoder().withoutPadding().encodeToString(mac.mac(canonical(row, attachment)))
 
-    fun verify(row: ScheduledMessageEntity): Boolean {
+    fun verify(row: ScheduledMessageEntity, attachment: ByteArray? = null): Boolean {
         if (row.authTag.isEmpty()) return false
+        if ((row.attachmentName == null) != (attachment == null)) return false
         val given = try { Base64.getDecoder().decode(row.authTag) } catch (_: IllegalArgumentException) { return false }
-        return MessageDigest.isEqual(given, mac.mac(canonical(row)))
+        return MessageDigest.isEqual(given, mac.mac(canonical(row, attachment)))
     }
 
     companion object {
         /** Length-prefixed fields so no two different rows share bytes. */
-        fun canonical(row: ScheduledMessageEntity): ByteArray {
+        fun canonical(row: ScheduledMessageEntity, attachment: ByteArray? = null): ByteArray {
             val bodyHash = MessageDigest.getInstance("SHA-256").digest(row.body.toByteArray(Charsets.UTF_8))
-            val fields = listOf(
-                "v1".toByteArray(),
+            // v1 = SMS (unchanged so rows scheduled by 0.2 still verify); v2 adds the attachment hash.
+            val fields = listOfNotNull(
+                (if (attachment == null) "v1" else "v2").toByteArray(),
                 row.id.toString().toByteArray(),
                 row.recipients.toByteArray(Charsets.UTF_8),
                 bodyHash,
                 row.sendAt.toString().toByteArray(),
                 (row.subscriptionId?.toString() ?: "-").toByteArray(),
+                attachment?.let { MessageDigest.getInstance("SHA-256").digest(it) },
             )
             val out = java.io.ByteArrayOutputStream()
             fields.forEach { f ->

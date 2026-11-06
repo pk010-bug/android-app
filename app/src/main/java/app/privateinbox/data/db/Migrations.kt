@@ -11,7 +11,13 @@ object Migrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2)
+    val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            MigrationSql.V2_TO_V3.forEach(db::execSQL)
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 }
 
 object MigrationSql {
@@ -31,5 +37,10 @@ object MigrationSql {
             "`createdAt` INTEGER NOT NULL, `status` TEXT NOT NULL, `authTag` TEXT NOT NULL, `conversationId` INTEGER)",
         "CREATE INDEX IF NOT EXISTS `index_scheduled_messages_sendAt` ON `scheduled_messages` (`sendAt`)",
         "CREATE INDEX IF NOT EXISTS `index_scheduled_messages_status` ON `scheduled_messages` (`status`)",
+    )
+
+    /** 0.2.0 → 1.0.0: scheduled MMS attachment. */
+    val V2_TO_V3: List<String> = listOf(
+        "ALTER TABLE `scheduled_messages` ADD COLUMN `attachmentName` TEXT",
     )
 }

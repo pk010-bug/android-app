@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">PrivateInbox</string>
+    <string name="widget_description">Unread counts. Never shows message text or codes.</string>
 </resources>

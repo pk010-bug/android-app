@@ -96,42 +96,41 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 
 ## Features
 
-**Shipped in v0.2 (builds; 102 JVM unit tests pass; not yet verified on a physical device):**
+**Shipped in v1.0.0 (builds; 119 JVM unit tests pass; not yet verified end-to-end on a physical device):**
 - Default SMS app: onboarding + role request, receive (`SMS_DELIVER`), write to the system SMS
-  store, incremental import of existing messages, read-only mode when not default
-- Smart inbox: Important / Personal / OTP / Promotional / Spam / Unknown, with unread counts per
-  category, pin, mute, archive, mark read, and "Move to category" (learns a sender rule)
-- Conversation view: chat bubbles, OTP "copy code" chip (sensitive clipboard), "Why is this
-  here?" explanations, scam warning banner with reasons, dial-only call button
-- Sending: tap-only, with a confirmation dialog (recipient, SIM, text) on by default; dual-SIM
-  picker; delivery status (Sending / Sent / Failed)
-- Smart inbox rules manager: your own regex rules (always win), built-in rules shown read-only,
-  rule tester, re-apply to all messages
-- Scam heuristics: short/IP/APK links, scam-prone domains, KYC/blocking threats, prizes,
-  "share your OTP", pay-to-receive, brand impersonation from personal numbers, job scams
-- Finance dashboard from bank/card/UPI SMS: monthly spent/received, top merchants, transactions
-- Bills & alerts: due-date + amount detection, reminders 3 days before, mark paid; recent OTPs;
-  suspicious messages
-- Search, block/unblock, recycle bin (restore / delete forever / auto-purge after 7-90 days)
-- Encrypted local backup & restore (password, AES-256-GCM + PBKDF2, file you choose)
-- App lock (biometric / device credential) with timeout; theme (system / light / dark)
-- Composer: recipient chips, system contact picker (needs no permission), optional on-device
-  contact suggestions (READ_CONTACTS)
-- Scheduled send (SMS): pick date/time, confirm once; survives reboot (WorkManager); pending list
-  per conversation and in Settings → Scheduled messages, with cancel
-- Groups: send one text to up to 20 people (each gets an individual SMS); group threads
-- MMS receive: photos and text through the system MMS service, shown as image bubbles with a
-  full-screen viewer; other media types appear as a placeholder
-- MMS send: one photo (+ text) per message, re-encoded as metadata-free JPEG sized for the carrier;
-  multiple recipients become a group MMS
+  store, incremental import of existing SMS, read-only mode when not default
+- Smart inbox: Important / Personal / OTP / Promotional / Spam / Unknown, unread counts, pin,
+  mute, archive, "Move to category" (learns a sender rule), rules manager with tester
+- Conversation view: bubbles, OTP "copy code" chip (sensitive clipboard), "Why is this here?",
+  scam banner with reasons, dial-only call button
+- Sending: tap-only with confirmation (recipient, SIM, text) on by default; dual-SIM picker;
+  status (Sending / Sent / Failed); recipient chips, system contact picker, optional suggestions
+- Groups: one text to up to 20 people (individual SMS each) or one group MMS with a photo
+- Scheduled send for SMS **and MMS with a photo**: confirm once; sealed with a Keystore HMAC
+  (including the exact image bytes); survives reboot; cancel from the thread or Settings
+- MMS receive: photos, video, audio and contact cards via the system MMS service. Photos show as
+  bubbles with a FLAG_SECURE viewer; other media are never auto-opened — tap → confirm → "Open
+  with…" through a short-lived, non-exported FileProvider copy
+- MMS send: one photo (+ text), re-encoded as metadata-free JPEG sized for the carrier
+- Sent and received MMS are mirrored into the system MMS store (`content://mms`) so other
+  apps and system backups see them (when PrivateInbox is the default SMS app)
+- Per-conversation notification sound / vibration (own channel, edited in system settings)
+- Home-screen widget: unread counts per category; optional contact names (off by default,
+  always hidden while app lock is on); never message text or codes; not placeable on lock screen
+- Scam heuristics, finance dashboard, bills & reminders, search, block, recycle bin
+- Encrypted backup & restore (AES-256-GCM + PBKDF2) now including MMS media and paid-bill state;
+  restored media re-validated by magic bytes
+- App lock (biometric / device credential) with timeout; themes
 
-**Still missing / known gaps:**
-- MMS is not written to the system MMS store (other SMS apps won't see it); backups don't include
-  MMS images; video/audio/vCard MMS aren't displayed; incoming group MMS appear in the sender's
-  1:1 thread (tagged "Group MMS") because we deliberately don't read your own phone number
-- Scheduled send is SMS-only and may fire a few minutes late in Doze; >24h late = not sent
-- Per-conversation notification sounds, home-screen widget, instrumented UI tests
-- Signed reproducible release build (planned as a separate step)
+**Known gaps (honest list):**
+- Not yet tested end-to-end on real carriers; MMS behaviour varies by carrier/MMSC
+- Existing MMS already on the phone before install are not imported (SMS are)
+- Restored-from-backup messages are not written back into the system SMS/MMS store
+- Backups are built in memory; very large MMS libraries could be slow or run out of memory
+- Outgoing MMS has no SMIL layout part; sending video/audio/contacts is not supported (receive only)
+- Incoming group MMS appear in the sender's 1:1 thread (tagged), since we don't read our own number
+- Scheduled send can be minutes late under Doze; >24h late is not sent
+- Single-signer release key; no reproducible-build verification yet
 
 ## License
 

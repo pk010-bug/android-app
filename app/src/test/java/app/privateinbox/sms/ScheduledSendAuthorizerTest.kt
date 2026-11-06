@@ -42,4 +42,22 @@ class ScheduledSendAuthorizerTest {
         // Status/createdAt/conversation aren't part of the authorisation.
         assertTrue(auth.verify(signed.copy(status = ScheduledStatus.SENT, createdAt = 99, conversationId = null)))
     }
+
+    private val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 1, 2, 3)
+    private val mmsRow = row.copy(attachmentName = "0f8fad5b-d9cb-469f-a165-70867728950e.jpg")
+    private val mmsSigned = mmsRow.copy(authTag = auth.sign(mmsRow, jpeg))
+
+    @Test fun mmsTagCoversAttachmentBytes() {
+        assertTrue(auth.verify(mmsSigned, jpeg))
+        assertFalse(auth.verify(mmsSigned, jpeg.copyOf().also { it[5] = 9 }))
+        assertFalse("missing bytes", auth.verify(mmsSigned, null))
+        assertFalse("sms tag reused for mms", auth.verify(signed.copy(attachmentName = mmsRow.attachmentName), jpeg))
+        assertFalse("mms tag with attachment removed", auth.verify(mmsSigned.copy(attachmentName = null), null))
+    }
+
+    @Test fun smsCanonicalFormUnchangedFromV02() {
+        // Rows scheduled by 0.2 must still verify after the upgrade.
+        val c = ScheduledSendAuthorizer.canonical(row)
+        assertTrue(String(c, 4, 2) == "v1")
+    }
 }

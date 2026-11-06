@@ -34,6 +34,9 @@ interface ConversationDao {
     @Query("SELECT $EFFECTIVE_CATEGORY AS category, SUM(unreadCount) AS unread FROM conversations WHERE archived = 0 GROUP BY $EFFECTIVE_CATEGORY")
     fun observeUnreadByCategory(): Flow<List<CategoryUnread>>
 
+    @Query("SELECT * FROM conversations WHERE unreadCount > 0 AND archived = 0 AND muted = 0 ORDER BY lastMessageAt DESC LIMIT :limit")
+    suspend fun recentUnread(limit: Int): List<ConversationEntity>
+
     @Query("SELECT * FROM conversations WHERE id = :id")
     fun observeById(id: Long): Flow<ConversationEntity?>
 
@@ -102,7 +105,7 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE id = :id")
     suspend fun getById(id: Long): MessageEntity?
 
-    @Query("SELECT * FROM messages WHERE providerId = :providerId AND incoming = :incoming LIMIT 1")
+    @Query("SELECT * FROM messages WHERE providerId = :providerId AND incoming = :incoming AND isMms = 0 LIMIT 1")
     suspend fun getByProviderId(providerId: Long, incoming: Boolean): MessageEntity?
 
     @Query("SELECT * FROM messages WHERE deletedAt IS NULL")
@@ -261,6 +264,12 @@ interface ScheduledDao {
     /** Atomic claim: returns 1 only for the single caller that moved it out of [from]. */
     @Query("UPDATE scheduled_messages SET status = :to WHERE id = :id AND status = :from")
     suspend fun transition(id: Long, from: ScheduledStatus, to: ScheduledStatus): Int
+
+    @Query("SELECT * FROM scheduled_messages WHERE status IN ('FAILED', 'CANCELLED') AND attachmentName IS NOT NULL")
+    suspend fun getFailedWithAttachment(): List<ScheduledMessageEntity>
+
+    @Query("UPDATE scheduled_messages SET attachmentName = NULL WHERE id = :id")
+    suspend fun clearAttachment(id: Long)
 
     @Query("DELETE FROM scheduled_messages WHERE status != 'PENDING' AND sendAt < :before")
     suspend fun deleteFinishedBefore(before: Long): Int

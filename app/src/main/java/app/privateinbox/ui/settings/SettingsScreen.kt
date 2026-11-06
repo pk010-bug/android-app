@@ -68,6 +68,7 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
     val promo by s.notifyPromotions.collectAsState(initial = false)
     val bills by s.billReminders.collectAsState(initial = true)
     val scam by s.scamWarnings.collectAsState(initial = true)
+    val widgetNames by s.widgetShowNames.collectAsState(initial = false)
     val days by s.recycleBinDays.collectAsState(initial = 30)
     val theme by s.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
     var isDefault by remember { mutableStateOf(DefaultSmsApp.isDefault(context)) }
@@ -96,7 +97,7 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
                 lockError = "Set up a screen lock on this phone first."
             } else {
                 lockError = null
-                scope.launch { s.setAppLock(on) }
+                scope.launch { s.setAppLock(on); app.privateinbox.widget.InboxWidget.requestUpdate(context) }
             }
         }
         lockError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
@@ -117,6 +118,11 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
         Toggle("Notify for promotions", "Off by default: promotions arrive silently.", promo) { scope.launch { s.setNotifyPromotions(it) } }
         Toggle("Bill reminders", "Remind me 3 days before a detected due date.", bills) { scope.launch { s.setBillReminders(it) } }
         Toggle("Scam warnings", "Flag risky messages in notifications and conversations.", scam) { scope.launch { s.setScamWarnings(it) } }
+        Toggle(
+            "Show names on home-screen widget",
+            "Off: the widget shows unread counts only. Names are always hidden while app lock is on; message text and codes are never shown.",
+            widgetNames,
+        ) { scope.launch { s.setWidgetShowNames(it); app.privateinbox.widget.InboxWidget.requestUpdate(context) } }
 
         Section("Inbox")
         Nav("Smart inbox rules", "See and edit how messages are sorted") { onNavigate(SettingsDest.RULES) }

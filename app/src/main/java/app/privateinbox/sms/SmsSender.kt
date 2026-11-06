@@ -6,20 +6,28 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.telephony.SmsManager
+import androidx.core.content.FileProvider
+import app.privateinbox.attachments.AttachmentPolicy
+import app.privateinbox.data.db.MmsPartEntity
 import app.privateinbox.data.db.PrivateInboxDatabase
 import app.privateinbox.data.db.ScheduledMessageEntity
 import app.privateinbox.data.db.ScheduledStatus
 import app.privateinbox.data.repo.MessageRepository
+import app.privateinbox.mms.MmsImages
+import app.privateinbox.mms.MmsPdu
+import app.privateinbox.mms.MmsStore
 import app.privateinbox.security.PendingIntents
 import app.privateinbox.security.SafeLog
+import java.io.File
 
 /**
- * The single place in the app that may send an SMS.
+ * The single place in the app that may send a user message (SMS or MMS).
  *
  * - Immediate sends require a fresh [UserSendConfirmation] (composer Send / Confirm button).
- * - Scheduled sends require one at *scheduling* time; the row is then sealed with a Keystore
- *   HMAC ([ScheduledSendAuthorizer]) that the worker verifies before sending.
- * - Groups are sent as individual SMS to each member (no group MMS).
+ * - Scheduled sends require one at *scheduling* time; the row (and, for MMS, the exact
+ *   attachment bytes) is sealed with a Keystore HMAC ([ScheduledSendAuthorizer]) that the worker
+ *   verifies before sending.
+ * - SMS to a group = individual SMS per member; MMS to a group = one group MMS.
  * External intents can never reach this: [app.privateinbox.compose.IntentTriage] only produces drafts.
  */
 class SmsSender(
@@ -28,6 +36,7 @@ class SmsSender(
     private val db: PrivateInboxDatabase,
     private val authorizer: ScheduledSendAuthorizer = ScheduledSendAuthorizer(),
     private val clock: () -> Long = System::currentTimeMillis,
+    private val store: MmsStore = MmsStore(context),
 ) {
 
     sealed interface Result {
@@ -49,29 +58,61 @@ class SmsSender(
         return dispatch(clean, body, subscriptionId)
     }
 
+    /**
+     * Sends a picture message. [image] must already be in our private attachments store (copied
+     * by [app.privateinbox.attachments.AttachmentImporter], which enforced the policy). It is
+     * re-encoded to a metadata-free JPEG sized for the carrier before it leaves the app.
+     */
+    suspend fun sendMms(
+        confirmation: UserSendConfirmation,
+        recipients: List<String>,
+        body: String,
+        image: File,
+        subscriptionId: Int? = null,
+    ): Result {
+        if (!confirmation.consume()) return Result.Refused("send must be confirmed by a tap")
+        val clean = cleanRecipients(recipients)
+        validateMms(clean, body)?.let { return it }
+        val jpeg = when (val p = prepareJpeg(image, body, subscriptionId)) {
+            is Prepared.Ok -> p.jpeg
+            is Prepared.Err -> return p.refused
+        }
+        return dispatchMms(clean, body, jpeg, store.save(jpeg, "jpg"), subscriptionId)
+    }
+
+    /** Schedules an SMS, or an MMS when [image] is given (compressed now; those bytes are sealed). */
     suspend fun schedule(
         confirmation: UserSendConfirmation,
         recipients: List<String>,
         body: String,
         sendAt: Long,
         subscriptionId: Int? = null,
+        image: File? = null,
     ): Result {
         if (!confirmation.consume()) return Result.Refused("scheduling must be confirmed by a tap")
-        val clean = validate(recipients, body)?.let { return it } ?: cleanRecipients(recipients)
+        val clean = cleanRecipients(recipients)
+        if (image == null) validate(clean, body)?.let { return it } else validateMms(clean, body)?.let { return it }
         val now = clock()
         if (sendAt < now + MIN_LEAD_MS) return Result.Refused("pick a time at least a minute from now")
         if (sendAt > now + MAX_LEAD_MS) return Result.Refused("pick a time within a year")
+        val jpeg = image?.let {
+            when (val p = prepareJpeg(it, body, subscriptionId)) {
+                is Prepared.Ok -> p.jpeg
+                is Prepared.Err -> return p.refused
+            }
+        }
+        val attachmentName = jpeg?.let { store.save(it, "jpg") }
         val conv = repository.conversationFor(clean)
         val dao = db.scheduledDao()
         val draft = ScheduledMessageEntity(
             recipients = clean.joinToString("\n"), body = body, sendAt = sendAt,
             subscriptionId = subscriptionId, createdAt = now, status = ScheduledStatus.PENDING,
-            conversationId = conv.id,
+            conversationId = conv.id, attachmentName = attachmentName,
         )
         val id = dao.insert(draft)
-        dao.setTag(id, authorizer.sign(draft.copy(id = id)))
+        dao.setTag(id, authorizer.sign(draft.copy(id = id), jpeg))
         ScheduledSends.enqueue(context, id, sendAt, now)
-        SafeLog.i(TAG, "scheduled message for ${clean.size} recipient(s)")
+        SafeLog.i(TAG, "scheduled ${if (jpeg != null) "mms" else "sms"} for ${clean.size} recipient(s)")
         return Result.Scheduled(id, conv.id)
     }
 
@@ -80,7 +121,14 @@ class SmsSender(
         val dao = db.scheduledDao()
         val row = dao.getById(id) ?: return ScheduledOutcome.ALREADY_HANDLED
         if (row.status != ScheduledStatus.PENDING) return ScheduledOutcome.ALREADY_HANDLED
-        if (!authorizer.verify(row)) {
+        val attachment = row.attachmentName?.let { name ->
+            store.file(name)?.takeIf { it.length() in 1..AttachmentPolicy.MAX_BYTES }?.readBytes()
+                ?: run {
+                    dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.FAILED)
+                    return ScheduledOutcome.FAILED
+                }
+        }
+        if (!authorizer.verify(row, attachment)) {
             dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.FAILED)
             SafeLog.w(TAG, "scheduled row failed integrity check; not sending")
             return ScheduledOutcome.REJECTED
@@ -94,57 +142,86 @@ class SmsSender(
         }
         // Atomic claim so a duplicate worker run can never double-send.
         if (dao.transition(id, ScheduledStatus.PENDING, ScheduledStatus.SENT) != 1) return ScheduledOutcome.ALREADY_HANDLED
-        val recipients = row.recipients.split('\n').filter { it.isNotBlank() }
-        validate(recipients, row.body)?.let {
+        val recipients = cleanRecipients(row.recipients.split('\n'))
+        val invalid = if (attachment == null) validate(recipients, row.body) else validateMms(recipients, row.body)
+        if (invalid != null) {
             dao.setStatus(id, ScheduledStatus.FAILED)
             return ScheduledOutcome.FAILED
         }
-        return when (dispatch(recipients, row.body, row.subscriptionId)) {
+        val result = if (attachment != null) {
+            // The sealed file becomes the sent message's part (ownership moves to the message).
+            dao.clearAttachment(id)
+            dispatchMms(recipients, row.body, attachment, row.attachmentName!!, row.subscriptionId)
+        } else {
+            dispatch(recipients, row.body, row.subscriptionId)
+        }
+        return when (result) {
             is Result.Queued -> ScheduledOutcome.SENT
             else -> { dao.setStatus(id, ScheduledStatus.FAILED); ScheduledOutcome.FAILED }
         }
     }
 
-    /**
-     * Sends a picture message. [image] must already be in our private attachments store (copied
-     * by [app.privateinbox.attachments.AttachmentImporter], which enforced the policy). It is
-     * re-encoded to a metadata-free JPEG sized for the carrier before it leaves the app.
-     * Multiple recipients become one group MMS. Blocking work runs on the caller's dispatcher.
-     */
-    suspend fun sendMms(
-        confirmation: UserSendConfirmation,
-        recipients: List<String>,
-        body: String,
-        image: java.io.File,
-        subscriptionId: Int? = null,
-    ): Result {
-        if (!confirmation.consume()) return Result.Refused("send must be confirmed by a tap")
+    private fun cleanRecipients(recipients: List<String>) =
+        recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
+    private fun validate(recipients: List<String>, body: String): Result.Refused? {
         val clean = cleanRecipients(recipients)
-        validate(clean, body.ifBlank { "-" })?.let { return it }
-        if (clean.any { r -> r.count(Char::isDigit) < 3 || r.any { it.isLetter() } }) return Result.Refused("MMS needs phone numbers")
-        val manager = smsManager(subscriptionId) ?: return Result.Refused("no SmsManager")
+        if (clean.isEmpty()) return Result.Refused("no recipient")
+        if (clean.size > MAX_RECIPIENTS) return Result.Refused("too many recipients (max $MAX_RECIPIENTS)")
+        if (clean.any { !RECIPIENT.matches(it) }) return Result.Refused("invalid recipient")
+        if (body.isBlank()) return Result.Refused("empty message")
+        if (body.length > MAX_BODY) return Result.Refused("message too long")
+        if (context.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+            return Result.Refused("SEND_SMS not granted")
+        }
+        return null
+    }
+
+    private fun validateMms(recipients: List<String>, body: String): Result.Refused? {
+        validate(recipients, body.ifBlank { "-" })?.let { return it }
+        if (recipients.any { r -> r.count(Char::isDigit) < 3 || r.any { it.isLetter() } }) return Result.Refused("MMS needs phone numbers")
+        return null
+    }
+
+    private sealed interface Prepared {
+        class Ok(val jpeg: ByteArray) : Prepared
+        class Err(val refused: Result.Refused) : Prepared
+    }
+
+    private fun prepareJpeg(image: File, body: String, subscriptionId: Int?): Prepared {
+        val manager = smsManager(subscriptionId) ?: return Prepared.Err(Result.Refused("no SmsManager"))
         val maxBytes = runCatching { manager.carrierConfigValues.getInt(SmsManager.MMS_CONFIG_MAX_MESSAGE_SIZE, DEFAULT_MMS_MAX) }
             .getOrDefault(DEFAULT_MMS_MAX).coerceIn(100_000, 1_000_000)
-        val raw = runCatching { image.takeIf { it.length() in 1..app.privateinbox.attachments.AttachmentPolicy.MAX_BYTES }?.readBytes() }.getOrNull()
-            ?: return Result.Refused("attachment unavailable")
-        val jpeg = app.privateinbox.mms.MmsImages.compressForMms(raw, maxBytes - 8_000 - body.length * 3)
-            ?: return Result.Refused("couldn't shrink the image enough for MMS")
+        val raw = runCatching { image.takeIf { it.length() in 1..AttachmentPolicy.MAX_BYTES }?.readBytes() }.getOrNull()
+            ?: return Prepared.Err(Result.Refused("attachment unavailable"))
+        val jpeg = MmsImages.compressForMms(raw, maxBytes - 8_000 - body.length * 3)
+            ?: return Prepared.Err(Result.Refused("couldn't shrink the image enough for MMS"))
+        return Prepared.Ok(jpeg)
+    }
 
-        val store = app.privateinbox.mms.MmsStore(context)
-        val record = repository.recordOutgoing(clean, body, subscriptionId, isMms = true)
-        val stored = store.save(jpeg, "jpg")
-        repository.addMmsPart(
-            app.privateinbox.data.db.MmsPartEntity(messageId = record.messageId, mimeType = "image/jpeg", fileName = stored, sizeBytes = jpeg.size.toLong()),
-        )
-        val parts = buildList {
-            if (body.isNotBlank()) add(app.privateinbox.mms.MmsPdu.OutPart("text/plain", "text_0.txt", body.toByteArray(Charsets.UTF_8)))
-            add(app.privateinbox.mms.MmsPdu.OutPart("image/jpeg", "image_0.jpg", jpeg))
+    private suspend fun dispatchMms(
+        clean: List<String>,
+        body: String,
+        jpeg: ByteArray,
+        storedName: String,
+        subscriptionId: Int?,
+    ): Result {
+        val manager = smsManager(subscriptionId) ?: run {
+            store.delete(storedName)
+            return Result.Refused("no SmsManager")
         }
-        val pdu = app.privateinbox.mms.MmsPdu.encodeSendReq(
-            "T" + java.lang.Long.toHexString(System.nanoTime()) + record.messageId, clean, null, parts,
+        val record = repository.recordOutgoing(clean, body, subscriptionId, isMms = true)
+        repository.addMmsPart(
+            MmsPartEntity(messageId = record.messageId, mimeType = "image/jpeg", fileName = storedName, sizeBytes = jpeg.size.toLong()),
         )
+        repository.mirrorMms(record.messageId, from = null, to = clean)
+        val parts = buildList {
+            if (body.isNotBlank()) add(MmsPdu.OutPart("text/plain", "text_0.txt", body.toByteArray(Charsets.UTF_8)))
+            add(MmsPdu.OutPart("image/jpeg", "image_0.jpg", jpeg))
+        }
+        val pdu = MmsPdu.encodeSendReq("T" + java.lang.Long.toHexString(System.nanoTime()) + record.messageId, clean, null, parts)
         val file = store.newPduFile("send").apply { writeBytes(pdu) }
-        val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val sent = PendingIntents.broadcast(
             context,
             file.name.hashCode(),
@@ -163,22 +240,6 @@ class SmsSender(
             SafeLog.e(TAG, "mms send failed", e)
             Result.Refused("the phone rejected the MMS")
         }
-    }
-
-    private fun cleanRecipients(recipients: List<String>) =
-        recipients.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
-
-    private fun validate(recipients: List<String>, body: String): Result.Refused? {
-        val clean = cleanRecipients(recipients)
-        if (clean.isEmpty()) return Result.Refused("no recipient")
-        if (clean.size > MAX_RECIPIENTS) return Result.Refused("too many recipients (max $MAX_RECIPIENTS)")
-        if (clean.any { !RECIPIENT.matches(it) }) return Result.Refused("invalid recipient")
-        if (body.isBlank()) return Result.Refused("empty message")
-        if (body.length > MAX_BODY) return Result.Refused("message too long")
-        if (context.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
-            return Result.Refused("SEND_SMS not granted")
-        }
-        return null
     }
 
     private suspend fun dispatch(recipients: List<String>, body: String, subscriptionId: Int?): Result {

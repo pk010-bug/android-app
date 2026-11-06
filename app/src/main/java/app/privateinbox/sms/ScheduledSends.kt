@@ -28,14 +28,20 @@ object ScheduledSends {
 
     /** Cancelling is always safe, so it needs no confirmation token. */
     suspend fun cancel(context: Context, db: PrivateInboxDatabase, id: Long) {
-        db.scheduledDao().transition(id, ScheduledStatus.PENDING, ScheduledStatus.CANCELLED)
+        if (db.scheduledDao().transition(id, ScheduledStatus.PENDING, ScheduledStatus.CANCELLED) == 1) {
+            db.scheduledDao().getById(id)?.attachmentName?.let { app.privateinbox.mms.MmsStore(context).delete(it) }
+        }
         WorkManager.getInstance(context).cancelUniqueWork(workName(id))
     }
 
     /** Re-enqueue any pending rows whose job is missing (e.g. after "clear cache" or an update). */
     suspend fun reconcile(context: Context, db: PrivateInboxDatabase) {
-        db.scheduledDao().getPending().forEach { enqueue(context, it.id, it.sendAt) }
-        db.scheduledDao().deleteFinishedBefore(System.currentTimeMillis() - 30L * 24 * 3600 * 1000)
+        val dao = db.scheduledDao()
+        dao.getPending().forEach { enqueue(context, it.id, it.sendAt) }
+        // FAILED rows still own their sealed attachment (SENT rows handed it to the message).
+        val store = app.privateinbox.mms.MmsStore(context)
+        dao.getFailedWithAttachment().forEach { store.delete(it.attachmentName); dao.clearAttachment(it.id) }
+        dao.deleteFinishedBefore(System.currentTimeMillis() - 30L * 24 * 3600 * 1000)
     }
 
     const val TAG = "scheduled-send"

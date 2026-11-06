@@ -82,8 +82,40 @@ class MigrationSchemaTest {
         }
     }
 
+    @Test fun v2ToV3MatchesFreshV3() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(2))
+            migrated.createStatement().use {
+                it.execute("INSERT INTO scheduled_messages (id, recipients, body, sendAt, createdAt, status, authTag) VALUES (1,'5551234','hi',9,1,'PENDING','tag')")
+            }
+            MigrationSql.V2_TO_V3.forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(3))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+            migrated.createStatement().use { st ->
+                st.executeQuery("SELECT authTag, attachmentName FROM scheduled_messages WHERE id = 1").use { rs ->
+                    rs.next()
+                    assertEquals("tag", rs.getString(1))
+                    assertEquals(null, rs.getString(2))
+                }
+            }
+        }
+    }
+
+    @Test fun v1ChainToV3MatchesFreshV3() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(1))
+            (MigrationSql.V1_TO_V2 + MigrationSql.V2_TO_V3).forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(3))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+        }
+    }
+
     @Test fun migrationsChainToCurrentVersion() {
-        val latest = schema(2)["version"]!!.jsonPrimitive.content.toInt()
+        val latest = schema(3)["version"]!!.jsonPrimitive.content.toInt()
         assertEquals(latest, Migrations.ALL.maxOf { it.endVersion })
     }
 }

@@ -122,6 +122,8 @@ data class ScheduledMessageEntity(
     val status: ScheduledStatus = ScheduledStatus.PENDING,
     val authTag: String = "",
     val conversationId: Long? = null,
+    /** Pre-compressed JPEG in the private mms store for a scheduled MMS; its SHA-256 is in [authTag]. */
+    val attachmentName: String? = null,
 )
 
 @Entity(

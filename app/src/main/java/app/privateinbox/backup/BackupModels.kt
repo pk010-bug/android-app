@@ -6,13 +6,25 @@ import kotlinx.serialization.json.Json
 /** Stable, versioned backup schema (independent of Room entity layout). */
 @Serializable
 data class BackupPayload(
-    val format: Int = 1,
+    /** 1 = v0.1/0.2 (text only); 2 = 1.0 (adds MMS flags + media parts). Both restore. */
+    val format: Int = 2,
     val createdAt: Long,
     val conversations: List<BConversation>,
     val messages: List<BMessage>,
     val rules: List<BRule>,
     val blocked: List<BBlocked>,
+    /** Backup-local message ids whose bills were marked paid. */
     val paidBillMessageIds: List<Long> = emptyList(),
+    val mmsParts: List<BMmsPart> = emptyList(),
+)
+
+/** One MMS media/text part. [data] is base64 of the file (re-validated on restore). */
+@Serializable
+data class BMmsPart(
+    val messageId: Long,
+    val mimeType: String,
+    val text: String? = null,
+    val data: String? = null,
 )
 
 @Serializable
@@ -39,6 +51,8 @@ data class BMessage(
     val status: String,
     val subscriptionId: Int? = null,
     val deletedAt: Long? = null,
+    val isMms: Boolean = false,
+    val mmsSubject: String? = null,
 )
 
 @Serializable

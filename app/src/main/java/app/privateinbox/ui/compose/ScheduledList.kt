@@ -48,7 +48,8 @@ private fun ScheduledRow(row: ScheduledMessageEntity, showRecipients: Boolean) {
             Column(Modifier.weight(1f).padding(8.dp)) {
                 Text("Scheduled · ${fmt(row.sendAt)}", style = MaterialTheme.typography.labelMedium)
                 if (showRecipients) Text(row.recipients.replace("\n", ", "), style = MaterialTheme.typography.bodySmall)
-                Text(row.body, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
+                if (row.attachmentName != null) Text("[photo]", style = MaterialTheme.typography.labelSmall)
+                if (row.body.isNotEmpty()) Text(row.body, maxLines = 2, style = MaterialTheme.typography.bodyMedium)
             }
             IconButton(onClick = { scope.launch { ScheduledSends.cancel(context.applicationContext, container.database, row.id) } }) {
                 Icon(Icons.Outlined.Close, contentDescription = "Cancel scheduled message")

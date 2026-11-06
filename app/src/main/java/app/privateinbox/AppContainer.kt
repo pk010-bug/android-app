@@ -26,9 +26,22 @@ class AppContainer(private val context: Context) {
     }
     val mmsStore by lazy { app.privateinbox.mms.MmsStore(context) }
     val messages by lazy {
-        MessageRepository(database, rules, telephony).apply { deleteMediaFiles = { names -> names.forEach(mmsStore::delete) } }
+        MessageRepository(database, rules, telephony).apply {
+            deleteMediaFiles = { names -> names.forEach(mmsStore::delete) }
+            mediaFile = mmsStore::file
+            onUnreadChanged = { app.privateinbox.widget.InboxWidget.requestUpdate(context) }
+        }
     }
-    val backup by lazy { app.privateinbox.backup.BackupManager(database, rules, messages) }
+    val backup by lazy {
+        app.privateinbox.backup.BackupManager(
+            database, rules, messages,
+            object : app.privateinbox.backup.BackupManager.MediaIo {
+                override fun read(name: String?) = mmsStore.file(name)?.readBytes()
+                override fun save(bytes: ByteArray, extension: String) = mmsStore.save(bytes, extension)
+                override fun delete(name: String) = mmsStore.delete(name)
+            },
+        )
+    }
     val messageNotifier by lazy { MessageNotifier(context) }
     val otpNotifier by lazy { OtpNotifier(context) }
 
@@ -55,19 +68,17 @@ class AppContainer(private val context: Context) {
         pdu.parts.take(20).forEach { p ->
             when {
                 p.isText -> p.text().take(5_000).takeIf { it.isNotBlank() }?.let { texts += it }
-                p.contentType.startsWith("image/") -> {
-                    when (val d = app.privateinbox.attachments.AttachmentPolicy.checkContent(p.data.copyOf(minOf(32, p.data.size)), p.data.size.toLong())) {
-                        is app.privateinbox.attachments.ContentDecision.Accept -> {
-                            val name = mmsStore.save(p.data, d.type.extension)
-                            parts += app.privateinbox.data.db.MmsPartEntity(
-                                messageId = 0, mimeType = d.type.mime, fileName = name, sizeBytes = p.data.size.toLong(),
-                            )
-                        }
-                        is app.privateinbox.attachments.ContentDecision.Reject -> texts += "[image not shown: ${d.reason}]"
-                    }
-                }
                 p.contentType == "application/smil" -> Unit
-                else -> texts += "[attachment not supported: ${p.contentType.take(40)}]"
+                else -> when (val d = app.privateinbox.attachments.MediaPolicy.check(p.data)) {
+                    is app.privateinbox.attachments.MediaPolicy.Decision.Accept -> {
+                        val name = mmsStore.save(p.data, d.type.extension)
+                        parts += app.privateinbox.data.db.MmsPartEntity(
+                            messageId = 0, mimeType = d.type.mime, fileName = name, sizeBytes = p.data.size.toLong(),
+                        )
+                    }
+                    is app.privateinbox.attachments.MediaPolicy.Decision.Reject ->
+                        texts += "[attachment not shown: ${d.reason}]"
+                }
             }
         }
         val recipients = (pdu.to + pdu.cc).distinct().size
@@ -84,10 +95,12 @@ class AppContainer(private val context: Context) {
             parts.forEach { mmsStore.delete(it.fileName) }
             return
         }
-        notifyIncoming(r, body.ifBlank { "Photo" })
+        messages.mirrorMms(r.messageId, from = from, to = (pdu.to + pdu.cc).distinct())
+        notifyIncoming(r, body.ifBlank { "Attachment" })
     }
 
     private suspend fun notifyIncoming(r: MessageRepository.IngestResult, body: String) {
+        app.privateinbox.widget.InboxWidget.requestUpdate(context)
         if (r.blocked || r.muted || !settings.notificationsEnabled.first()) return
         if (r.category == Category.SPAM) return
         if (r.category == Category.PROMOTIONAL && !settings.notifyPromotions.first()) return

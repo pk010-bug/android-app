@@ -36,6 +36,7 @@ class SettingsStore(private val context: Context) {
         val lastImportedProviderId = longPreferencesKey("provider_last_id")
         val defaultSubId = intPreferencesKey("default_sub_id")
         val onboardingDone = booleanPreferencesKey("onboarding_done")
+        val widgetShowNames = booleanPreferencesKey("widget_show_names")
     }
 
     private val data get() = context.dataStore.data
@@ -54,6 +55,8 @@ class SettingsStore(private val context: Context) {
     val lastImportedProviderId: Flow<Long> = data.map { it[Keys.lastImportedProviderId] ?: 0L }
     val defaultSubId: Flow<Int?> = data.map { it[Keys.defaultSubId] }
     val onboardingDone: Flow<Boolean> = data.map { it[Keys.onboardingDone] ?: false }
+    /** Off by default: the widget shows counts only. Never shown while app lock is on. */
+    val widgetShowNames: Flow<Boolean> = data.map { it[Keys.widgetShowNames] ?: false }
 
     /** FLAG_SECURE on OTP / finance / conversation screens whenever either protection is on. */
     val secureScreens: Flow<Boolean> =
@@ -72,6 +75,7 @@ class SettingsStore(private val context: Context) {
     suspend fun setImportDone(v: Boolean) = put(Keys.importDone, v)
     suspend fun setLastImportedProviderId(v: Long) = put(Keys.lastImportedProviderId, v)
     suspend fun setOnboardingDone(v: Boolean) = put(Keys.onboardingDone, v)
+    suspend fun setWidgetShowNames(v: Boolean) = put(Keys.widgetShowNames, v)
     suspend fun setDefaultSubId(v: Int?) {
         context.dataStore.edit { if (v == null) it.remove(Keys.defaultSubId) else it[Keys.defaultSubId] = v }
     }
