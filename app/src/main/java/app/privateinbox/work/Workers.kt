@@ -87,6 +87,7 @@ class ImportWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx
 class PurgeWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         val c = (applicationContext as PrivateInboxApp).container
+        runCatching { c.resetStuckMmsDownloads() }
         val n = c.messages.purgeExpired(c.settings.recycleBinDays.first())
         SafeLog.i("PurgeWorker", "purged=$n")
         return Result.success()
@@ -109,7 +110,14 @@ class BillReminderWorker(ctx: Context, params: WorkerParameters) : CoroutineWork
                 1L -> "due tomorrow"
                 else -> "due in $days days"
             }
-            c.messageNotifier.showBillReminder(b.id, "Bill $whenText", b.biller, c.settings.hideOnLockScreen.first())
+            // F-08: content-free while app lock is on (the biller name stays inside the app).
+            val contentFree = c.settings.appLockEnabled.first() && c.settings.contentFreeWhenLocked.first()
+            c.messageNotifier.showBillReminder(
+                b.id,
+                if (contentFree) "Bill reminder" else "Bill $whenText",
+                if (contentFree) "Open PrivateInbox to see it." else b.biller,
+                c.settings.hideOnLockScreen.first(),
+            )
         }
         return Result.success()
     }

@@ -38,6 +38,10 @@ class SettingsStore(private val context: Context) {
         val onboardingDone = booleanPreferencesKey("onboarding_done")
         val widgetShowNames = booleanPreferencesKey("widget_show_names")
         val hideOnLockScreen = booleanPreferencesKey("hide_on_lock_screen")
+        val integrityWarned = stringPreferencesKey("integrity_warned_signals")
+        val rootNoticeDismissed = stringPreferencesKey("integrity_root_notice_dismissed")
+        val contentFreeWhenLocked = booleanPreferencesKey("notifications_content_free_when_locked")
+        val autoDownloadMmsContacts = booleanPreferencesKey("mms_auto_download_contacts")
     }
 
     private val data get() = context.dataStore.data
@@ -64,6 +68,24 @@ class SettingsStore(private val context: Context) {
      */
     val hideOnLockScreen: Flow<Boolean> = data.map { it[Keys.hideOnLockScreen] ?: true }
 
+    /**
+     * F-08, on by default: while app lock is on, notifications say only "New message" (no sender, no
+     * text, no code), so nothing readable shows in the shade of an unlocked phone either.
+     */
+    val contentFreeWhenLocked: Flow<Boolean> = data.map { it[Keys.contentFreeWhenLocked] ?: true }
+
+    /**
+     * F-04, on by default: picture messages from contacts (or people you've texted) download on
+     * arrival. Unknown senders always need a tap (with a warning); blocked senders never download.
+     */
+    val autoDownloadMmsFromContacts: Flow<Boolean> = data.map { it[Keys.autoDownloadMmsContacts] ?: true }
+
+    /** Signal set (names only) the one-time high-risk integrity warning was last shown for. */
+    val integrityWarnedSignals: Flow<String> = data.map { it[Keys.integrityWarned] ?: "" }
+
+    /** Root signal set (names only) the user dismissed the informational notice for. */
+    val rootNoticeDismissedSignals: Flow<String> = data.map { it[Keys.rootNoticeDismissed] ?: "" }
+
     /** FLAG_SECURE on OTP / finance / conversation screens whenever either protection is on. */
     val secureScreens: Flow<Boolean> =
         combine(appLockEnabled, hideOtpInNotifications) { lock, hide -> lock || hide }
@@ -83,6 +105,10 @@ class SettingsStore(private val context: Context) {
     suspend fun setOnboardingDone(v: Boolean) = put(Keys.onboardingDone, v)
     suspend fun setWidgetShowNames(v: Boolean) = put(Keys.widgetShowNames, v)
     suspend fun setHideOnLockScreen(v: Boolean) = put(Keys.hideOnLockScreen, v)
+    suspend fun setIntegrityWarnedSignals(v: String) = put(Keys.integrityWarned, v)
+    suspend fun setRootNoticeDismissedSignals(v: String) = put(Keys.rootNoticeDismissed, v)
+    suspend fun setContentFreeWhenLocked(v: Boolean) = put(Keys.contentFreeWhenLocked, v)
+    suspend fun setAutoDownloadMmsFromContacts(v: Boolean) = put(Keys.autoDownloadMmsContacts, v)
     suspend fun setDefaultSubId(v: Int?) {
         context.dataStore.edit { if (v == null) it.remove(Keys.defaultSubId) else it[Keys.defaultSubId] = v }
     }

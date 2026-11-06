@@ -10,9 +10,11 @@ reports as a priority.
 1. Use GitHub's **private vulnerability reporting**: on the repository page go to
    *Security → Report a vulnerability*. This opens a private advisory visible only to the
    maintainers.
+   Direct link: <https://github.com/pk010-bug/android-app/security/advisories/new>
+   (GitHub Security Advisories for `pk010-bug/android-app`). This is the preferred channel.
 2. If that is not available, email the maintainers at the security contact listed in the
-   repository profile (`TODO: add security contact address before first public release`),
-   with the subject `[PrivateInbox security]`.
+   repository profile (`TODO: add security contact address before first public release`;
+   until then, use the GitHub advisory link above), with the subject `[PrivateInbox security]`.
 
 Please include:
 - affected version / commit, device and Android version
@@ -52,6 +54,9 @@ device; issues in Android itself or the carrier network.
 | Backups | User-initiated only; PBKDF2-HMAC-SHA256 (600k; KDF id + iterations in the authenticated v2 header, v1/310k files still restore) → AES-256-GCM; new backups need a 12+ character password that passes a strength check (`BackupPasswordPolicy`); export/restore need a fresh authentication; zip-bomb and size guards on restore; restored rules re-validated; no upload path exists | `backup/` |
 | Background work | WorkManager jobs are local only (provider import, recycle-bin purge, bill reminders); receivers use `goAsync` and never log content | `work/`, `sms/` |
 | Scheduled send | Scheduling consumes the same tap token; the row (id, recipients, body hash, time, SIM) is sealed with a non-exportable AndroidKeyStore HMAC-SHA256 key. The worker re-verifies, claims the row atomically (no double send), and drops messages >24 h late. Only `ScheduledSendWorker` may call `sendScheduled` (source-scan test) | `sms/ScheduledSendAuthorizer.kt`, `sms/SmsSender.kt`, `SendPathTest` |
+| MMS download (F-04) | A WAP push creates a placeholder + `pending_mms` row. Known senders (contact / previously texted) auto-download if "Auto-download MMS from contacts" is on (default); everyone else needs a tap, unknown senders after a warning; blocked senders never. 5 MB cap; the policy is re-checked on every attempt. Undownloaded MMS get an M-NotifyResp "deferred"; a download with no callback for 10 min becomes retryable (startup + periodic reset, per-attempt tag ignores late callbacks) (`MmsDownloadPolicy`, `NoNetworkPolicyTest`) | `mms/MmsDownloadPolicy.kt`, `AppContainer.kt`, `sms/MmsReceiver.kt` |
+| Network | No `INTERNET`, `ACCESS_NETWORK_STATE`, `CHANGE_NETWORK_STATE` or Wi-Fi state permissions (stripped with `tools:node="remove"`, checked on the merged manifest at build time and by `ManifestPolicyTest`); no app-side networking APIs (`NoNetworkPolicyTest`); MMS only via the system MMS service | `AndroidManifest.xml`, `app/build.gradle.kts` |
+| Runtime integrity (I-01) | Local-only checks, no SDK, no network: signing-cert SHA-256 pin (release, `privateinbox.releaseCertSha256`), debuggable flag, Frida (maps, thread names, port 27042 via `/proc/net/tcp`), Xposed/LSPosed (classes, maps, stack), debugger (`isDebuggerConnected`, TracerPid), root (su, Magisk/KernelSU files and mounts, test-keys, rw system). Tamper/hook/debugger in release re-locks the app once and shows a one-time warning; root is an informational, dismissible notice. Never blocks | `security/integrity/` |
 | MMS | Push payloads and downloaded PDUs parsed by a bounds-checked, fuzz-tested codec with part/size caps; transport by the system MMS service only (no INTERNET). Incoming images re-checked by magic bytes + size, stored under `noBackupFilesDir/mms` with validated bare file names; scratch PDUs in a narrow FileProvider path and deleted after each callback. Outgoing photos re-encoded (EXIF stripped). `MmsTransport` may only send its own NotifyResp (test-enforced); user MMS goes through `SmsSender` with a tap token. Image viewer dialog is `FLAG_SECURE` | `mms/`, `sms/Mms*.kt`, `SendPathTest` |
 | Received media | Video/audio/vCard accepted only if bytes match an allow-listed signature (MediaPolicy; declared type ignored), 5 MiB cap; never rendered or auto-opened. "Open with…" requires tap + confirm and hands a one-off READ grant on a copy in `cache/open` (swept after 1 h) | `attachments/MediaPolicy.kt`, `mms/MediaOpener.kt`, `ManifestPolicyTest` |
 | Widget | Home-screen only (no keyguard category); receiver guarded by `BIND_APPWIDGET`; renders counts and optional contact names only (off by default, hidden when app lock is on); source-scan test forbids widget code touching bodies/previews/OTP; tap opens MainActivity so app lock applies | `widget/`, `WidgetContentTest` |
@@ -101,3 +106,46 @@ Contributed by the project owner (medium-severity fixes, reviewed before merge):
 
 Also in v1.0.2: turning off "Confirm before sending" and showing contact names on the widget
 need a fresh authentication.
+
+## v1.0.3 hardening
+
+Owner's F-04 / I-01 / no-network work (from the "hardened" zip), rebased onto v1.0.2, plus fixes
+for the remaining Low findings of the external review:
+
+- **MMS (F-04):** "Auto-download MMS from contacts" (default on; unknown senders always need a
+  tap with a warning, blocked senders never download). Carrier gets M-NotifyResp "deferred" for
+  anything left undownloaded and M-Acknowledge.ind after a deferred retrieval. Stuck downloads
+  time out after 10 min (reset on app start and by the periodic job) and can be retried; each
+  attempt is tagged so a late callback can't clobber a newer attempt. DB v5 (`pending_mms`
+  `updatedAt` / `attempt` / `deferredSent`).
+- **Runtime integrity (I-01):** release builds pin the signing certificate
+  (`db63bd02…bee9`, in `gradle.properties`). High-risk signals only re-lock and warn once; root is
+  an informational notice. Nothing is ever blocked.
+- **No network-state permissions:** `ACCESS_NETWORK_STATE`, `CHANGE_NETWORK_STATE` and Wi-Fi state
+  are stripped. Verified safe: no WorkManager job sets a network constraint (source test), so
+  WorkManager 2.10 schedules them with `NETWORK_TYPE_NONE` and never needs the permission.
+- **F-14 send confirmation:** the dialog shows the whole message (scrollable, with a character
+  count) instead of the first 300 characters, and drafts prefilled by another app are always
+  confirmed, even with "Confirm before sending" off.
+- **F-13 database key:** only a permanent key loss (invalidated/missing key, tag mismatch, corrupt
+  wrapped file) wipes the encrypted cache. Transient Keystore errors are retried and then show a
+  "Try again" screen; the unwrap path never creates a new key.
+- **F-05 rule ReDoS:** custom (and restored) rule patterns are rejected if they have nested
+  repetition/alternation, back-references, look-arounds, huge repeat counts or many `.*`. All rules
+  run on RE2/J (linear time) with a 50 ms per-match budget; unsafe stored rules are skipped.
+- **F-15 PendingIntents:** every PendingIntent has its own request-code range per purpose plus an
+  Intent identifier (kind + full id) on Android 10+, so notifications can't overwrite each other's
+  tap targets.
+- **F-12 sender grouping:** last-10-digit merging only when the country prefix is compatible with
+  the phone's home country (SIM/network country); other countries' numbers get their own thread
+  key. "Move to…" sender rules are anchored to the whole sender (old rules are anchored on load).
+  The block list also checks the pre-1.0.3 key, so nobody blocked earlier becomes unblocked.
+- **F-06 / F-08:** OTPs are masked in list previews when "Hide OTPs" is on; new "Content-free
+  notifications while locked" (default on; turning it off needs fresh authentication).
+- **F-07:** copied message text (menu or text selection) is flagged sensitive and cleared after 2 min.
+- **F-03:** re-lock on return is decided synchronously in `onStart` from in-memory settings.
+- **Docs (I-06):** privacy notes updated; private reporting via GitHub Security Advisories.
+
+Known limits: foreign-number threads created before v1.0.3 start a new thread on the next message;
+release builds keep `Log.i/w/e` (redacted); media files rely on Android file-based encryption.
+

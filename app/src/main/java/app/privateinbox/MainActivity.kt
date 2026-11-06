@@ -6,7 +6,10 @@ import android.os.SystemClock
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -30,6 +33,10 @@ import app.privateinbox.navigation.DeepLinks
 import app.privateinbox.notifications.OtpNotifier
 import app.privateinbox.security.SafeLog
 import app.privateinbox.security.SecureWindow
+import app.privateinbox.security.integrity.IntegrityReport
+import app.privateinbox.security.integrity.IntegrityRisk
+import app.privateinbox.security.integrity.IntegritySignal
+import app.privateinbox.ui.lock.AppLock
 import app.privateinbox.ui.compose.Draft
 import app.privateinbox.ui.navigation.PrivateInboxNavHost
 import app.privateinbox.ui.theme.PrivateInboxTheme
@@ -47,7 +54,29 @@ class MainActivity : FragmentActivity() {
     private val pendingDraft = mutableStateOf<Draft?>(null)
     private val pendingRoute = mutableStateOf<String?>(null)
     private val locked = mutableStateOf(true)
+    /** Set when integrity checks report high risk: shows the lock screen even if app lock is off. */
+    private val integrityLock = mutableStateOf(false)
+    private val integrityWarning = mutableStateOf(false)
+    /** High-risk signals the user already re-authenticated for in this process. */
+    private var acknowledgedHighRisk: Set<IntegritySignal> = emptySet()
     private var backgroundedAt = 0L
+
+    /**
+     * F-03: in-memory copy of the lock settings, kept current by a collector started in onCreate,
+     * so onStart can decide to re-lock synchronously (before the first frame is drawn) instead of
+     * in a coroutine that may run after content is already visible. null = not loaded yet.
+     */
+    @Volatile private var lockEnabledNow: Boolean? = null
+    @Volatile private var lockTimeoutMsNow: Long = 30_000L
+
+    /** F-13: the encrypted database is opened off the main thread; a transient Keystore failure shows a retry screen. */
+    private val dbState = mutableStateOf<DbState>(DbState.Opening)
+
+    private sealed interface DbState {
+        data object Opening : DbState
+        data object Ready : DbState
+        data object Unavailable : DbState
+    }
 
     private val container get() = (application as PrivateInboxApp).container
 
@@ -61,6 +90,10 @@ class MainActivity : FragmentActivity() {
         if (savedInstanceState == null) handle(intent)
         lifecycleScope.launch(Dispatchers.IO) { runCatching { AttachmentImporter(applicationContext).sweep() } }
         lifecycleScope.launch { locked.value = container.settings.appLockEnabled.first() }
+        lifecycleScope.launch { container.settings.appLockEnabled.collect { lockEnabledNow = it } }
+        lifecycleScope.launch { container.settings.lockTimeoutSec.collect { lockTimeoutMsNow = it * 1000L } }
+        openDatabase()
+        checkIntegrity(force = true)
         setContent {
             val settings = container.settings
             val theme by settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
@@ -78,7 +111,14 @@ class MainActivity : FragmentActivity() {
                     Surface {
                         when {
                             lockOn == null || onboarded == null -> Unit
-                            lockOn == true && locked.value -> LockScreen(onUnlocked = { locked.value = false })
+                            (lockOn == true || integrityLock.value) && locked.value -> LockScreen(onUnlocked = {
+                                locked.value = false
+                                integrityLock.value = false
+                            })
+                            dbState.value != DbState.Ready -> app.privateinbox.ui.common.DatabaseStatusScreen(
+                                unavailable = dbState.value == DbState.Unavailable,
+                                onRetry = ::openDatabase,
+                            )
                             onboarded == false -> OnboardingScreen(onDone = { scope.launch { settings.setOnboardingDone(true) } })
                             else -> PrivateInboxNavHost(
                                 pendingDraft = pendingDraft.value,
@@ -87,6 +127,15 @@ class MainActivity : FragmentActivity() {
                                     pendingDraft.value = null
                                     pendingRoute.value = null
                                 },
+                            )
+                        }
+                        if (integrityWarning.value) {
+                            // One-time, non-blocking: the app keeps working after OK.
+                            AlertDialog(
+                                onDismissRequest = { integrityWarning.value = false },
+                                confirmButton = { TextButton(onClick = { integrityWarning.value = false }) { Text("OK") } },
+                                title = { Text("Security check") },
+                                text = { Text(INTEGRITY_WARNING) },
                             )
                         }
                     }
@@ -103,11 +152,58 @@ class MainActivity : FragmentActivity() {
     override fun onStart() {
         super.onStart()
         if (backgroundedAt == 0L) return
+        // F-03: synchronous, from the in-memory settings (unknown yet => treat as locked).
+        if (RelockPolicy.shouldRelock(lockEnabledNow, lockTimeoutMsNow, SystemClock.elapsedRealtime() - backgroundedAt)) {
+            locked.value = true
+        }
+        checkIntegrity(force = false)
+    }
+
+    private fun openDatabase() {
+        if (dbState.value == DbState.Ready) return
+        dbState.value = DbState.Opening
         lifecycleScope.launch {
-            val s = container.settings
-            if (!s.appLockEnabled.first()) return@launch
-            val timeoutMs = s.lockTimeoutSec.first() * 1000L
-            if (SystemClock.elapsedRealtime() - backgroundedAt >= timeoutMs) locked.value = true
+            val ok = withContext(Dispatchers.IO) {
+                try {
+                    container.database.openHelper.writableDatabase // opens + migrates now, off the main thread
+                    runCatching { container.resetStuckMmsDownloads() } // stuck "Downloading…" becomes retryable
+                    true
+                } catch (e: app.privateinbox.data.db.PrivateInboxDatabase.Companion.DatabaseTemporarilyUnavailableException) {
+                    SafeLog.w(TAG, "database temporarily unavailable")
+                    false
+                }
+            }
+            dbState.value = if (ok) DbState.Ready else DbState.Unavailable
+        }
+    }
+
+    /**
+     * I-01: local integrity checks off the main thread (throttled in IntegrityMonitor). High risk in a
+     * release build (tampered package, hooking framework, debugger) re-locks the app once per new
+     * signal set, so continuing needs a fresh strong authentication, and shows a one-time warning.
+     * Root alone is informational (Settings). Never blocks: without a screen lock we only warn.
+     */
+    private fun checkIntegrity(force: Boolean) {
+        lifecycleScope.launch {
+            val report = container.integrity.refresh(force)
+            if (report.risk == IntegrityRisk.HIGH) onHighRisk(report)
+        }
+    }
+
+    private suspend fun onHighRisk(report: IntegrityReport) {
+        val high = report.highRiskSignals
+        if (!acknowledgedHighRisk.containsAll(high)) {
+            acknowledgedHighRisk = acknowledgedHighRisk + high
+            if (AppLock.available(this)) {
+                integrityLock.value = true
+                locked.value = true
+            }
+        }
+        val key = report.key(high)
+        val s = container.settings
+        if (s.integrityWarnedSignals.first() != key) {
+            s.setIntegrityWarnedSignals(key)
+            integrityWarning.value = true
         }
     }
 
@@ -144,6 +240,7 @@ class MainActivity : FragmentActivity() {
                     // Carry the real grant decision to the "Attach" tap instead of assuming one there.
                     grantedSharedUris = usable.filter { it in granted }.toSet(),
                     notices = notices,
+                    external = true,
                 )
             }
         }
@@ -161,5 +258,10 @@ class MainActivity : FragmentActivity() {
 
     private companion object {
         const val TAG = "MainActivity"
+        const val INTEGRITY_WARNING =
+            "PrivateInbox found signs that it is being inspected or modified on this phone (a hooking tool, " +
+                "a debugger, or an app signature that doesn't match the official release). Your messages never " +
+                "leave this phone, but PrivateInbox locked itself and will ask for your screen lock before " +
+                "sensitive actions. If you didn't expect this, reinstall PrivateInbox from a source you trust."
     }
 }

@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.flowOf
 @Composable
 fun SearchScreen(onOpenConversation: (Long) -> Unit, onBack: () -> Unit) {
     val dao = LocalContainer.current.database.messageDao()
+    val hideOtpPreviews by LocalContainer.current.settings.hideOtpInNotifications.collectAsState(initial = true)
     var q by rememberSaveable { mutableStateOf("") }
     val trimmed = q.trim()
     val results by remember(trimmed) {
@@ -49,7 +50,7 @@ fun SearchScreen(onOpenConversation: (Long) -> Unit, onBack: () -> Unit) {
             items(results, key = { it.id }) { m ->
                 ListItem(
                     headlineContent = { Text(m.address) },
-                    supportingContent = { Text(m.body, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(app.privateinbox.security.OtpMask.maybeMask(m.body, hideOtpPreviews), maxLines = 2, overflow = TextOverflow.Ellipsis) },
                     trailingContent = { Text(Format.shortTime(m.timestamp)) },
                     modifier = Modifier.clickable { onOpenConversation(m.conversationId) },
                 )

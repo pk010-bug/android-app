@@ -103,6 +103,36 @@ class MigrationSchemaTest {
         }
     }
 
+    @Test fun v3ToV4MatchesFreshV4() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(3))
+            migrated.createStatement().use {
+                it.execute("INSERT INTO conversations (id, addressKey, address, category, lastMessagePreview, lastMessageAt, unreadCount, pinned, archived, muted, scamScore, isGroup, members) VALUES (1,'K','A','PERSONAL','hi',5,0,0,0,0,0,0,'')")
+                it.execute("INSERT INTO messages (id, conversationId, address, body, timestamp, incoming, read, status, category, scamScore, scamReasons, isMms) VALUES (1,1,'A','hi',5,1,0,'RECEIVED','PERSONAL',0,'',0)")
+            }
+            MigrationSql.V3_TO_V4.forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(4))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+            migrated.createStatement().use { st ->
+                st.executeQuery("SELECT body FROM messages WHERE id = 1").use { rs -> rs.next(); assertEquals("hi", rs.getString(1)) }
+                st.executeQuery("SELECT COUNT(*) FROM pending_mms").use { rs -> rs.next(); assertEquals(0, rs.getInt(1)) }
+            }
+        }
+    }
+
+    @Test fun v1ChainToV4MatchesFreshV4() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(1))
+            (MigrationSql.V1_TO_V2 + MigrationSql.V2_TO_V3 + MigrationSql.V3_TO_V4).forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(4))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+        }
+    }
+
     @Test fun v1ChainToV3MatchesFreshV3() {
         DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
             create(migrated, schema(1))
@@ -114,8 +144,44 @@ class MigrationSchemaTest {
         }
     }
 
+    @Test fun v4ToV5MatchesFreshV5AndKeepsPendingRows() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(4))
+            migrated.createStatement().use {
+                it.execute("INSERT INTO conversations (id, addressKey, address, category, lastMessagePreview, lastMessageAt, unreadCount, pinned, archived, muted, scamScore, isGroup, members) VALUES (1,'K','A','PERSONAL','hi',5,0,0,0,0,0,0,'')")
+                it.execute("INSERT INTO messages (id, conversationId, address, body, timestamp, incoming, read, status, category, scamScore, scamReasons, isMms) VALUES (1,1,'A','hi',5,1,0,'RECEIVED','PERSONAL',0,'',1)")
+                it.execute("INSERT INTO pending_mms (id, messageId, contentLocation, transactionId, subscriptionId, sizeBytes, state, createdAt) VALUES (1,1,'http://mmsc.example/x','T1',NULL,10,'DOWNLOADING',5)")
+            }
+            MigrationSql.V4_TO_V5.forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(5))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+            migrated.createStatement().use { st ->
+                st.executeQuery("SELECT state, updatedAt, attempt, deferredSent FROM pending_mms WHERE id = 1").use { rs ->
+                    rs.next()
+                    assertEquals("DOWNLOADING", rs.getString(1))
+                    assertEquals(0L, rs.getLong(2)) // => immediately counts as stuck, so it becomes retryable
+                    assertEquals(0, rs.getInt(3))
+                    assertEquals(0, rs.getInt(4))
+                }
+            }
+        }
+    }
+
+    @Test fun v1ChainToV5MatchesFreshV5() {
+        DriverManager.getConnection("jdbc:sqlite::memory:").use { migrated ->
+            create(migrated, schema(1))
+            (MigrationSql.V1_TO_V2 + MigrationSql.V2_TO_V3 + MigrationSql.V3_TO_V4 + MigrationSql.V4_TO_V5).forEach { sql -> migrated.createStatement().use { it.execute(sql) } }
+            DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
+                create(fresh, schema(5))
+                assertEquals(describe(fresh), describe(migrated))
+            }
+        }
+    }
+
     @Test fun migrationsChainToCurrentVersion() {
-        val latest = schema(3)["version"]!!.jsonPrimitive.content.toInt()
+        val latest = schema(5)["version"]!!.jsonPrimitive.content.toInt()
         assertEquals(latest, Migrations.ALL.maxOf { it.endVersion })
     }
 }

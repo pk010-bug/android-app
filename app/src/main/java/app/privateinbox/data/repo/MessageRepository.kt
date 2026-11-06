@@ -56,7 +56,7 @@ class MessageRepository(
         mmsParts: List<app.privateinbox.data.db.MmsPartEntity> = emptyList(),
     ): IngestResult? {
         val key = AddressNormalizer.key(address)
-        val blocked = db.blockedSenderDao().isBlocked(key)
+        val blocked = db.blockedSenderDao().isBlockedAny(AddressNormalizer.lookupKeys(address))
         val engine = rules.engine()
         val classification = engine.classify(SmsMessage(address = address, body = body, timestampMillis = timestamp))
         val otp = OtpExtractor.extract(body)?.code

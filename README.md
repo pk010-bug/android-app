@@ -108,7 +108,8 @@ merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the adverti
 - Groups: one text to up to 20 people (individual SMS each) or one group MMS with a photo
 - Scheduled send for SMS **and MMS with a photo**: confirm once; sealed with a Keystore HMAC
   (including the exact image bytes); survives reboot; cancel from the thread or Settings
-- MMS receive: photos, video, audio and contact cards via the system MMS service. Photos show as
+- MMS receive: never auto-downloaded; tap Download on the placeholder (blocked senders refused, unknown
+  senders warned first). Photos, video, audio and contact cards via the system MMS service. Photos show as
   bubbles with a FLAG_SECURE viewer; other media are never auto-opened — tap → confirm → "Open
   with…" through a short-lived, non-exported FileProvider copy
 - MMS send: one photo (+ text), re-encoded as metadata-free JPEG sized for the carrier

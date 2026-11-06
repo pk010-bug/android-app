@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -76,6 +78,7 @@ fun MessageComposer(
     recipients: () -> List<String>,
     initialText: String = "",
     initialAttachment: java.io.File? = null,
+    externallyPrefilled: Boolean = false,
     onSent: (conversationId: Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -212,7 +215,7 @@ fun MessageComposer(
                     onClick = {
                         if (!hasSmsPerm()) {
                             smsPerm.launch(Manifest.permission.SEND_SMS)
-                        } else if (confirmSetting) {
+                        } else if (SendConfirmPolicy.mustConfirm(confirmSetting, externallyPrefilled)) {
                             confirming = true
                         } else {
                             // A human tapped Send (confirmation dialog disabled by the user).
@@ -225,8 +228,8 @@ fun MessageComposer(
     }
 
     val simLabel = sims.firstOrNull { it.subscriptionId == activeSub }?.label
-    fun summary() = "To: ${recipients().joinToString(", ")}" + (simLabel?.let { "\nFrom: $it" } ?: "") +
-        "\n\n" + (if (attachment != null) "[photo] " else "") + text.take(300) + if (text.length > 300) "…" else ""
+    // F-14: the dialog shows the WHOLE text (scrollable), never a truncated preview.
+    fun summary() = SendConfirmPolicy.summary(recipients(), simLabel, attachment != null, text, externallyPrefilled)
 
     if (confirming) {
         AlertDialog(
@@ -234,7 +237,7 @@ fun MessageComposer(
             title = { Text(if (recipients().size > 1) "Send to ${recipients().size} people?" else "Send this message?") },
             text = {
                 app.privateinbox.security.TapjackGuard()
-                Text(summary() + if (recipients().size > 1) "\n\nEach person gets a separate SMS; they won't see each other." else "")
+                ScrollableConfirmText(summary() + if (recipients().size > 1) "\n\nEach person gets a separate SMS; they won't see each other." else "")
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -295,7 +298,7 @@ fun MessageComposer(
             title = { Text("Schedule for $whenText?") },
             text = {
                 app.privateinbox.security.TapjackGuard()
-                Text(
+                ScrollableConfirmText(
                     summary() + "\n\nThis tap authorises PrivateInbox to send exactly this text at that time. " +
                         "Delivery may be a few minutes late if the phone is asleep; if it's more than a day late it won't be sent.",
                 )
@@ -309,4 +312,31 @@ fun MessageComposer(
             dismissButton = { TextButton(onClick = { scheduleAt = null }) { Text("Cancel") } },
         )
     }
+}
+
+/** Confirmation text that can be scrolled to the end, so nothing in the message is hidden (F-14). */
+@Composable
+private fun ScrollableConfirmText(text: String) {
+    androidx.compose.foundation.layout.Box(
+        Modifier
+            .heightIn(max = 360.dp)
+            .verticalScroll(androidx.compose.foundation.rememberScrollState()),
+    ) { Text(text) }
+}
+
+/** Pure rules for the send-confirmation dialog (unit-tested in SendConfirmPolicyTest). */
+object SendConfirmPolicy {
+    /** Drafts prefilled by another app are always confirmed, even with "Confirm before sending" off. */
+    fun mustConfirm(confirmSetting: Boolean, externallyPrefilled: Boolean) = confirmSetting || externallyPrefilled
+
+    fun summary(recipients: List<String>, simLabel: String?, hasPhoto: Boolean, text: String, externallyPrefilled: Boolean): String =
+        buildString {
+            if (externallyPrefilled) append("This message was filled in by another app. Read all of it before sending.\n\n")
+            append("To: ").append(recipients.joinToString(", "))
+            simLabel?.let { append("\nFrom: ").append(it) }
+            append("\n\n")
+            if (hasPhoto) append("[photo] ")
+            append(text)
+            append("\n\n(").append(text.length).append(if (text.length == 1) " character)" else " characters)")
+        }
 }

@@ -76,7 +76,7 @@ class MessageNotifier(private val context: Context) {
             return
         }
         ensureChannels()
-        val open = openRoute("conversation/$conversationId", conversationId.toInt())
+        val open = openRoute("conversation/$conversationId", PendingIntents.Kind.MESSAGE_OPEN, conversationId)
         val public = NotificationCompat.Builder(context, if (hasCustomChannel(conversationId)) conversationChannelId(conversationId) else CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_lock)
             .setContentTitle("New message")
@@ -114,7 +114,7 @@ class MessageNotifier(private val context: Context) {
                     .setContentTitle("Bill reminder")
                     .build(),
             )
-            .setContentIntent(openRoute("alerts", 7_000_000 + id.toInt()))
+            .setContentIntent(openRoute("alerts", PendingIntents.Kind.BILL_OPEN, id))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(TAG_BILL, id.toInt(), n)
@@ -133,7 +133,7 @@ class MessageNotifier(private val context: Context) {
             .setContentTitle("Scheduled message not sent")
             .setContentText("Open PrivateInbox to review it.")
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-            .setContentIntent(openRoute("scheduled", 8_000_000 + id.toInt()))
+            .setContentIntent(openRoute("scheduled", PendingIntents.Kind.SCHEDULED_OPEN, id))
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(TAG_SCHEDULED, id.toInt(), n)
@@ -146,9 +146,10 @@ class MessageNotifier(private val context: Context) {
         NotificationManagerCompat.from(context).cancel(TAG_MESSAGE, conversationId.toInt())
     }
 
-    private fun openRoute(route: String, requestCode: Int) = PendingIntents.activity(
+    private fun openRoute(route: String, kind: PendingIntents.Kind, id: Long) = PendingIntents.activity(
         context,
-        requestCode,
+        kind,
+        id,
         Intent(context, MainActivity::class.java)
             .setAction(OtpNotifier.ACTION_OPEN_ROUTE)
             .putExtra(DeepLinks.EXTRA_ROUTE, route)

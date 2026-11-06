@@ -12,7 +12,8 @@ import java.util.UUID
 
 /**
  * Copies OTPs / message text to the clipboard flagged as sensitive (hidden from the clipboard
- * preview on API 33+) and, for codes, clears it again after [OTP_CLEAR_MS].
+ * preview on API 33+) and clears it again: codes after [OTP_CLEAR_MS], message text after
+ * [MESSAGE_CLEAR_MS] (F-07).
  *
  * Clearing is best-effort (in-process timer). If we can still read the clip description we only
  * clear our own clip; while backgrounded Android 10+ hides the description from us, and we clear
@@ -21,9 +22,13 @@ import java.util.UUID
 object SensitiveClipboard {
     private const val LEGACY_SENSITIVE_EXTRA = "android.content.extra.IS_SENSITIVE"
     const val OTP_CLEAR_MS = 60_000L
+    const val MESSAGE_CLEAR_MS = 120_000L
+
+    /** Pure: how long a clip with [label] stays on the clipboard. Everything we copy is cleared. */
+    fun clearDelayFor(label: String): Long = if (label == "OTP") OTP_CLEAR_MS else MESSAGE_CLEAR_MS
     private val main by lazy { Handler(Looper.getMainLooper()) }
 
-    fun copy(context: Context, label: String, value: String, clearAfterMs: Long? = if (label == "OTP") OTP_CLEAR_MS else null) {
+    fun copy(context: Context, label: String, value: String, clearAfterMs: Long? = clearDelayFor(label)) {
         val tag = "$label#${UUID.randomUUID().toString().take(8)}"
         val clip = ClipData.newPlainText(tag, value)
         clip.description.extras = PersistableBundle().apply {

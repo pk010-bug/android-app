@@ -40,6 +40,7 @@ class HardeningPolicyTest {
             "setConfirmBeforeSend(false)" to "reauth(\"Turn off send confirmation\")",
             "setHideOtpInNotifications(false)" to "reauth(\"Show OTPs in notifications\")",
             "setHideOnLockScreen(false)" to "reauth(\"Show notifications on the lock screen\")",
+            "setContentFreeWhenLocked(false)" to "reauth(\"Show message text in notifications\")",
         )
         guarded.forEach { (call, gate) ->
             val line = settings.lines().firstOrNull { call in it }

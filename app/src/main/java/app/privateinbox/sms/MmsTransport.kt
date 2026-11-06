@@ -12,30 +12,35 @@ import app.privateinbox.security.SafeLog
 
 /**
  * Protocol-level MMS plumbing that is NOT a user message: downloading an incoming MMS and the
- * mandatory M-NotifyResp acknowledgement. All carrier traffic is done by the system MMS service
+ * mandatory carrier acknowledgements (M-NotifyResp.ind "retrieved" / "deferred",
+ * M-Acknowledge.ind after a deferred retrieval). All carrier traffic is done by the system MMS service
  * (it owns the mobile-data connection); PrivateInbox itself holds no INTERNET permission.
  *
- * SendPathTest pins this file: the only PDU it may hand to sendMultimediaMessage is one built by
- * [MmsPdu.encodeNotifyResp] here.
+ * SendPathTest pins this file: the only PDUs it may hand to sendMultimediaMessage are the
+ * acknowledgements built here by [MmsPdu.encodeNotifyResp] / [MmsPdu.encodeAcknowledgeInd].
  */
 class MmsTransport(private val context: Context, private val store: MmsStore = MmsStore(context)) {
 
-    fun download(contentLocation: String, transactionId: String, subscriptionId: Int?): Boolean {
-        if (!contentLocation.startsWith("http://") && !contentLocation.startsWith("https://")) return false
+    /** Only via AppContainer.startMmsDownload, after the policy check (F-04). [attempt] tags the callback. */
+    fun download(contentLocation: String, transactionId: String, subscriptionId: Int?, placeholderMessageId: Long, attempt: Int): Boolean {
+        if (!app.privateinbox.mms.MmsDownloadPolicy.isFetchableLocation(contentLocation)) return false
         val manager = manager(subscriptionId) ?: return false
         val file = store.newPduFile("dl")
         val uri = FileProvider.getUriForFile(context, authority(), file)
         val done = PendingIntents.broadcast(
             context,
-            file.name.hashCode(),
+            PendingIntents.Kind.MMS_DOWNLOADED,
+            file.name.hashCode().toLong() and 0xFFFFFFFFL, // one per attempt (unique scratch file)
             Intent(context, MmsDownloadedReceiver::class.java)
                 .setAction(MmsDownloadedReceiver.ACTION)
                 .putExtra(MmsDownloadedReceiver.EXTRA_FILE, file.name)
                 .putExtra(MmsDownloadedReceiver.EXTRA_TID, transactionId.take(100))
-                .putExtra(MmsDownloadedReceiver.EXTRA_SUB, subscriptionId ?: -1),
+                .putExtra(MmsDownloadedReceiver.EXTRA_SUB, subscriptionId ?: -1)
+                .putExtra(MmsDownloadedReceiver.EXTRA_PLACEHOLDER, placeholderMessageId)
+                .putExtra(MmsDownloadedReceiver.EXTRA_ATTEMPT, attempt),
         )
         return try {
-            manager.downloadMultimediaMessage(context, contentLocation, uri, null, done)
+            manager.downloadMultimediaMessage(context, contentLocation.trim(), uri, null, done)
             true
         } catch (e: Exception) {
             file.delete()
@@ -44,15 +49,30 @@ class MmsTransport(private val context: Context, private val store: MmsStore = M
         }
     }
 
-    /** Tells the MMSC we retrieved the message (and that read/delivery reports are NOT allowed). */
-    fun acknowledge(transactionId: String, subscriptionId: Int?) {
+    /**
+     * Tells the MMSC we retrieved the message (and that read/delivery reports are NOT allowed):
+     * M-NotifyResp.ind "retrieved" after an immediate download, M-Acknowledge.ind if the carrier was
+     * told "deferred" first.
+     */
+    fun acknowledge(transactionId: String, subscriptionId: Int?, afterDeferred: Boolean = false) =
+        sendControl(
+            if (afterDeferred) MmsPdu.encodeAcknowledgeInd(transactionId) else MmsPdu.encodeNotifyResp(transactionId, MmsPdu.STATUS_RETRIEVED),
+            subscriptionId,
+        )
+
+    /** M-NotifyResp.ind "deferred": the message stays on the MMSC until the user downloads it. */
+    fun notifyDeferred(transactionId: String, subscriptionId: Int?) =
+        sendControl(MmsPdu.encodeNotifyResp(transactionId, MmsPdu.STATUS_DEFERRED), subscriptionId)
+
+    private fun sendControl(pdu: ByteArray, subscriptionId: Int?) {
         val manager = manager(subscriptionId) ?: return
         val file = store.newPduFile("ack")
-        file.writeBytes(MmsPdu.encodeNotifyResp(transactionId))
+        file.writeBytes(pdu)
         val uri = FileProvider.getUriForFile(context, authority(), file)
         val done = PendingIntents.broadcast(
             context,
-            file.name.hashCode(),
+            PendingIntents.Kind.MMS_ACK,
+            file.name.hashCode().toLong() and 0xFFFFFFFFL,
             Intent(context, MmsSentReceiver::class.java)
                 .setAction(MmsSentReceiver.ACTION)
                 .putExtra(MmsSentReceiver.EXTRA_FILE, file.name),

@@ -30,6 +30,18 @@ class ManifestPolicyTest {
         assertFalse("CALL_PHONE requested", "android.permission.CALL_PHONE" in requested)
     }
 
+    @Test fun networkPermissionsAreRefused() {
+        val network = listOf(
+            "android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE", "android.permission.CHANGE_NETWORK_STATE",
+            "android.permission.ACCESS_WIFI_STATE", "android.permission.CHANGE_WIFI_STATE",
+        )
+        val all = elements("uses-permission")
+        network.forEach { p ->
+            assertTrue("$p must be refused with tools:node=remove", all.any { it.getAttributeNS(android, "name") == p && it.getAttributeNS(tools, "node") == "remove" })
+            assertFalse("$p requested", all.any { it.getAttributeNS(android, "name") == p && it.getAttributeNS(tools, "node") != "remove" })
+        }
+    }
+
     @Test fun exportedSurfaceIsMinimalAndPermissionGuarded() {
         val expected = mapOf(
             ".MainActivity" to "",

@@ -20,7 +20,9 @@ class RuleRepository(
     val defaultRules: List<RuleSpec> get() = defaults.rules
 
     suspend fun engine(): RegexRuleEngine = cached ?: mutex.withLock {
-        cached ?: RegexRuleEngine(RuleSet(rules = defaults.rules + dao.getAll().map(::toSpec))).also { cached = it }
+        // F-05: user rules saved before v1.0.3 (or slipped in some other way) are re-checked here;
+        // unsafe ones are skipped rather than run on every incoming message.
+        cached ?: RegexRuleEngine(RuleSet(rules = defaults.rules + dao.getAll().map(::toSpec).filter(::isSafe))).also { cached = it }
     }
 
     fun invalidate() {
@@ -47,12 +49,25 @@ class RuleRepository(
             description = e.description,
             priority = USER_PRIORITY_BOOST + e.priority,
             enabled = e.enabled,
-            senderPatterns = lines(e.senderPatterns),
+            senderPatterns = lines(e.senderPatterns).map { if (e.id.startsWith(SENDER_RULE_PREFIX)) anchorSenderPattern(it) else it },
             bodyPatterns = lines(e.bodyPatterns),
             excludeBodyPatterns = lines(e.excludeBodyPatterns),
         )
 
         private fun lines(s: String) = s.lines().map { it.trim() }.filter { it.isNotEmpty() }
+
+        const val SENDER_RULE_PREFIX = "${USER_PREFIX}sender-"
+
+        fun isSafe(spec: RuleSpec): Boolean =
+            (spec.senderPatterns + spec.bodyPatterns + spec.excludeBodyPatterns).all { RegexSafety.check(it) == null }
+
+        /**
+         * F-12: "Move to…" rules made before v1.0.3 stored an unanchored `\Qkey\E`, which also matched
+         * any longer sender containing that key ("HDFCBK" in "XHDFCBKX"). Anchor them to the whole
+         * sender (raw address or normalised key; see RegexRuleEngine).
+         */
+        fun anchorSenderPattern(p: String): String =
+            if (p.startsWith("\\Q") && p.endsWith("\\E")) "^$p$" else p
 
         /** Validates user input; returns an error message or null. */
         fun validate(senderPatterns: String, bodyPatterns: String, excludePatterns: String): String? {
@@ -60,24 +75,18 @@ class RuleRepository(
             if (lines(senderPatterns).isEmpty() && lines(bodyPatterns).isEmpty()) {
                 return "Add at least one sender or message pattern"
             }
-            all.forEach { p ->
-                if (p.length > 300) return "Pattern too long (max 300 characters)"
-                try {
-                    Regex(p)
-                } catch (e: IllegalArgumentException) {
-                    return "Invalid pattern: $p"
-                }
-            }
+            // F-05: syntax, length and ReDoS-shape checks. Also used for rules restored from a backup.
+            all.forEach { p -> RegexSafety.check(p)?.let { return it } }
             return null
         }
 
         /** Rule that pins every message from a sender to a category ("Move to…"). */
         fun senderRule(addressKey: String, category: Category): RuleEntity = RuleEntity(
-            id = "${USER_PREFIX}sender-${addressKey.lowercase().filter { it.isLetterOrDigit() }}",
+            id = "$SENDER_RULE_PREFIX${addressKey.lowercase().filter { it.isLetterOrDigit() }}",
             category = category,
             description = "Messages from $addressKey",
             priority = 500,
-            senderPatterns = Regex.escape(addressKey),
+            senderPatterns = "^" + Regex.escape(addressKey) + "$", // F-12: whole sender only
         )
     }
 }

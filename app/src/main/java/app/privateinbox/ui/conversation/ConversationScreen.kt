@@ -22,7 +22,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -79,6 +78,9 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
     val mmsParts by remember(conversationId) { container.database.mmsPartDao().observeForConversation(conversationId) }
         .collectAsState(initial = emptyList())
     val partsByMessage = remember(mmsParts) { mmsParts.groupBy { it.messageId } }
+    val pendingMms by remember(conversationId) { container.database.pendingMmsDao().observeForConversation(conversationId) }
+        .collectAsState(initial = emptyList())
+    val pendingByMessage = remember(pendingMms) { pendingMms.associateBy { it.messageId } }
     val listState = rememberLazyListState()
     LaunchedEffect(msgs.size) {
         if (msgs.isNotEmpty()) listState.scrollToItem(msgs.size - 1)
@@ -154,7 +156,7 @@ fun ConversationScreen(conversationId: Long, onBack: () -> Unit) {
                 modifier = Modifier.weight(1f).padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(msgs, key = { it.id }) { m -> Bubble(m, partsByMessage[m.id].orEmpty()) }
+                items(msgs, key = { it.id }) { m -> Bubble(m, partsByMessage[m.id].orEmpty(), pendingByMessage[m.id]) }
             }
             ScheduledStrip(conversationId)
             if (c != null && c.isGroup) {
@@ -192,7 +194,11 @@ private fun ScamBanner(m: MessageEntity?) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun Bubble(m: MessageEntity, parts: List<app.privateinbox.data.db.MmsPartEntity> = emptyList()) {
+private fun Bubble(
+    m: MessageEntity,
+    parts: List<app.privateinbox.data.db.MmsPartEntity> = emptyList(),
+    pending: app.privateinbox.data.db.PendingMmsEntity? = null,
+) {
     val context = LocalContext.current
     val container = LocalContainer.current
     val scope = rememberCoroutineScope()
@@ -230,7 +236,9 @@ private fun Bubble(m: MessageEntity, parts: List<app.privateinbox.data.db.MmsPar
         ) {
             m.mmsSubject?.let { Text(it, style = MaterialTheme.typography.labelMedium) }
             parts.filter { it.fileName != null }.forEach { if (it.mimeType.startsWith("image/")) MmsImage(it) else MediaChip(it) }
-            if (m.body.isNotEmpty()) SelectionContainer { Text(m.body, style = MaterialTheme.typography.bodyLarge) }
+            // F-07: copying a selection goes through SensitiveClipboard (flagged sensitive, auto-cleared).
+            if (m.body.isNotEmpty()) app.privateinbox.ui.common.SensitiveSelectionContainer { Text(m.body, style = MaterialTheme.typography.bodyLarge) }
+            pending?.let { PendingMmsAction(m.id, it) }
             m.otpCode?.let { code ->
                 AssistChip(
                     onClick = { SensitiveClipboard.copy(context, "OTP", code) },
@@ -266,6 +274,68 @@ private fun Bubble(m: MessageEntity, parts: List<app.privateinbox.data.db.MmsPar
                 scope.launch { container.messages.deleteMessages(listOf(m.id)) }
             })
         }
+    }
+}
+
+/**
+ * F-04: an MMS that has not been downloaded. Download happens on this tap; unknown senders get
+ * a warning first, blocked senders are refused (the policy is re-checked in AppContainer). A
+ * download with no answer for MmsDownloadPolicy.STUCK_AFTER_MS offers Retry.
+ */
+@Composable
+private fun PendingMmsAction(messageId: Long, p: app.privateinbox.data.db.PendingMmsEntity) {
+    val container = LocalContainer.current
+    val scope = rememberCoroutineScope()
+    var warn by remember { mutableStateOf(false) }
+    var note by remember { mutableStateOf<String?>(null) }
+    fun start(confirmed: Boolean) {
+        scope.launch {
+            val ok = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { container.startMmsDownload(messageId, confirmed) }
+            note = if (ok) null else "Couldn't start the download. Check that mobile data is on, then try again."
+        }
+    }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(p.state, p.updatedAt) {
+        now = System.currentTimeMillis()
+        if (p.state == app.privateinbox.data.db.PendingMmsState.DOWNLOADING) {
+            val left = p.updatedAt + app.privateinbox.mms.MmsDownloadPolicy.STUCK_AFTER_MS - now
+            if (left > 0) kotlinx.coroutines.delay(left + 1_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    val ui = app.privateinbox.mms.MmsDownloadPolicy.uiState(p.state, p.updatedAt, now)
+    if (ui == app.privateinbox.mms.MmsDownloadPolicy.UiState.DOWNLOADING) {
+        Text("Downloading…", style = MaterialTheme.typography.labelMedium)
+    } else {
+        androidx.compose.material3.OutlinedButton(onClick = {
+            scope.launch {
+                val decision = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { container.mmsDownloadDecision(messageId) }
+                note = null
+                when (decision) {
+                    app.privateinbox.mms.MmsDownloadPolicy.Decision.ALLOW -> start(confirmed = false)
+                    app.privateinbox.mms.MmsDownloadPolicy.Decision.WARN_UNKNOWN_SENDER -> warn = true
+                    app.privateinbox.mms.MmsDownloadPolicy.Decision.REFUSE_BLOCKED -> note = "This sender is blocked. Unblock them to download."
+                    app.privateinbox.mms.MmsDownloadPolicy.Decision.REFUSE_TOO_LARGE -> note = "Too large to download (over 5 MB)."
+                    app.privateinbox.mms.MmsDownloadPolicy.Decision.REFUSE_BAD_LOCATION, null -> note = "This message can't be downloaded."
+                }
+            }
+        }) { Text(if (ui == app.privateinbox.mms.MmsDownloadPolicy.UiState.RETRY) "Download failed. Retry" else "Download") }
+    }
+    note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+    if (warn) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { warn = false },
+            title = { Text("Download from an unknown sender?") },
+            text = {
+                Text(
+                    "This sender isn't in your contacts and you've never messaged them. Downloading fetches the " +
+                        "message through your carrier, which can tell the sender your number is active, and the " +
+                        "content may be unwanted or harmful. Only download if you expect it.",
+                )
+            },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { warn = false; start(confirmed = true) }) { Text("Download") } },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { warn = false }) { Text("Cancel") } },
+        )
     }
 }
 

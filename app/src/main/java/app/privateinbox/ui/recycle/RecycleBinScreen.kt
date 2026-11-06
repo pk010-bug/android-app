@@ -32,6 +32,7 @@ fun RecycleBinScreen(onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val items by remember { c.database.messageDao().observeRecycleBin() }.collectAsState(initial = emptyList())
     val days by c.settings.recycleBinDays.collectAsState(initial = 30)
+    val hideOtpPreviews by c.settings.hideOtpInNotifications.collectAsState(initial = true)
     var confirmEmpty by remember { mutableStateOf(false) }
 
     SubScreen("Recycle bin", onBack, actions = {
@@ -47,7 +48,7 @@ fun RecycleBinScreen(onBack: () -> Unit) {
             items(items, key = { it.id }) { m ->
                 ListItem(
                     headlineContent = { Text(m.address) },
-                    supportingContent = { Text(m.body, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+                    supportingContent = { Text(app.privateinbox.security.OtpMask.maybeMask(m.body, hideOtpPreviews), maxLines = 2, overflow = TextOverflow.Ellipsis) },
                     overlineContent = { Text("Deleted ${Format.date(m.deletedAt ?: 0)}") },
                     trailingContent = {
                         Row {

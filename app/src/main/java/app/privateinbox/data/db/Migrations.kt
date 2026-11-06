@@ -17,7 +17,19 @@ object Migrations {
         }
     }
 
-    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            MigrationSql.V3_TO_V4.forEach(db::execSQL)
+        }
+    }
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            MigrationSql.V4_TO_V5.forEach(db::execSQL)
+        }
+    }
+
+    val ALL: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 }
 
 object MigrationSql {
@@ -42,5 +54,21 @@ object MigrationSql {
     /** 0.2.0 → 1.0.0: scheduled MMS attachment. */
     val V2_TO_V3: List<String> = listOf(
         "ALTER TABLE `scheduled_messages` ADD COLUMN `attachmentName` TEXT",
+    )
+
+    /** 1.0.2 → 1.0.3: MMS is not auto-downloaded from unknown senders (F-04); notifications wait here. */
+    val V3_TO_V4: List<String> = listOf(
+        "CREATE TABLE IF NOT EXISTS `pending_mms` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`messageId` INTEGER NOT NULL, `contentLocation` TEXT NOT NULL, `transactionId` TEXT NOT NULL, " +
+            "`subscriptionId` INTEGER, `sizeBytes` INTEGER, `state` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+            "FOREIGN KEY(`messageId`) REFERENCES `messages`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "CREATE UNIQUE INDEX IF NOT EXISTS `index_pending_mms_messageId` ON `pending_mms` (`messageId`)",
+    )
+
+    /** 1.0.3: stuck-download timeout, per-attempt tag, carrier "deferred" bookkeeping. */
+    val V4_TO_V5: List<String> = listOf(
+        "ALTER TABLE `pending_mms` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE `pending_mms` ADD COLUMN `attempt` INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE `pending_mms` ADD COLUMN `deferredSent` INTEGER NOT NULL DEFAULT 0",
     )
 }

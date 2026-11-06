@@ -117,6 +117,7 @@ private fun ConversationRow(t: ConversationEntity, onClick: () -> Unit) {
     val container = LocalContainer.current
     val scope = rememberCoroutineScope()
     var menu by remember { mutableStateOf(false) }
+    val hideOtp by remember { container.settings.hideOtpInNotifications }.collectAsState(initial = true)
     val cat = t.categoryOverride ?: t.category
     val name = t.displayName ?: t.address
     Box {
@@ -136,7 +137,7 @@ private fun ConversationRow(t: ConversationEntity, onClick: () -> Unit) {
                     if (t.scamScore >= ScamDetector.SUSPICIOUS) Icon(Icons.Outlined.Warning, "Possible scam", tint = MaterialTheme.colorScheme.error)
                 }
             },
-            supportingContent = { Text(t.lastMessagePreview, maxLines = 2, overflow = TextOverflow.Ellipsis) },
+            supportingContent = { Text(app.privateinbox.security.OtpMask.maybeMask(t.lastMessagePreview, hideOtp), maxLines = 2, overflow = TextOverflow.Ellipsis) },
             trailingContent = {
                 Column(horizontalAlignment = Alignment.End) {
                     Text(Format.shortTime(t.lastMessageAt), style = MaterialTheme.typography.labelSmall)

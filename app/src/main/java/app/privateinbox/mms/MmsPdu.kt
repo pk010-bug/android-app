@@ -22,6 +22,11 @@ object MmsPdu {
     const val TYPE_NOTIFICATION_IND = 0x82
     const val TYPE_NOTIFYRESP_IND = 0x83
     const val TYPE_RETRIEVE_CONF = 0x84
+    const val TYPE_ACKNOWLEDGE_IND = 0x85
+
+    /** X-Mms-Status values for M-NotifyResp.ind (OMA MMS ENC 7.3.54). */
+    const val STATUS_RETRIEVED = 0x81
+    const val STATUS_DEFERRED = 0x83
 
     // Header field codes (already OR'ed with 0x80)
     const val H_BCC = 0x81
@@ -355,11 +360,25 @@ object MmsPdu {
         return w.toBytes()
     }
 
-    fun encodeNotifyResp(transactionId: String): ByteArray = Writer().apply {
+    /**
+     * M-NotifyResp.ind. [status] is [STATUS_RETRIEVED] after an immediate download, or
+     * [STATUS_DEFERRED] when the message is left on the MMSC for the user to fetch later (stops the
+     * carrier re-sending the WAP push).
+     */
+    fun encodeNotifyResp(transactionId: String, status: Int = STATUS_RETRIEVED): ByteArray = Writer().apply {
+        require(status == STATUS_RETRIEVED || status == STATUS_DEFERRED) { "unsupported status" }
         u8(H_MESSAGE_TYPE); u8(TYPE_NOTIFYRESP_IND)
         u8(H_TRANSACTION_ID); text(transactionId)
         u8(H_MMS_VERSION); u8(MMS_VERSION_1_2)
-        u8(H_STATUS); u8(0x81) // retrieved
+        u8(H_STATUS); u8(status)
         u8(H_REPORT_ALLOWED); u8(0x81) // no: don't send read/delivery reports about the user
+    }.toBytes()
+
+    /** M-Acknowledge.ind: confirms a deferred retrieval (sent instead of a second NotifyResp). */
+    fun encodeAcknowledgeInd(transactionId: String): ByteArray = Writer().apply {
+        u8(H_MESSAGE_TYPE); u8(TYPE_ACKNOWLEDGE_IND)
+        u8(H_TRANSACTION_ID); text(transactionId)
+        u8(H_MMS_VERSION); u8(MMS_VERSION_1_2)
+        u8(H_REPORT_ALLOWED); u8(0x81) // no
     }.toBytes()
 }

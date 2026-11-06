@@ -224,7 +224,8 @@ class SmsSender(
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val sent = PendingIntents.broadcast(
             context,
-            file.name.hashCode(),
+            PendingIntents.Kind.MMS_SENT,
+            file.name.hashCode().toLong() and 0xFFFFFFFFL, // one per attempt (unique scratch file)
             Intent(context, MmsSentReceiver::class.java)
                 .setAction(MmsSentReceiver.ACTION)
                 .putExtra(MmsSentReceiver.EXTRA_FILE, file.name)
@@ -252,7 +253,8 @@ class SmsSender(
                 parts.indices.map { i ->
                     PendingIntents.broadcast(
                         context,
-                        requestCode(record.messageId, r, i),
+                        PendingIntents.Kind.SMS_SENT,
+                        partId(record.messageId, r, i),
                         Intent(context, SmsSentReceiver::class.java)
                             .setAction(SmsSentReceiver.ACTION_SENT)
                             .putExtra(SmsSentReceiver.EXTRA_MESSAGE_ID, record.messageId)
@@ -294,7 +296,8 @@ class SmsSender(
         const val EARLY_SLACK_MS = 2 * 60_000L
         const val STALE_MS = 24L * 3600 * 1000
         private val RECIPIENT = Regex("^\\+?[0-9A-Za-z .()\\-]{2,32}$")
-        private fun requestCode(messageId: Long, recipient: Int, part: Int) =
-            (((messageId * 32 + recipient) * 64 + part) and 0x7FFFFFFF).toInt()
+        /** Unique per (message, recipient, part); the full value is in the Intent identifier on Android 10+. */
+        internal fun partId(messageId: Long, recipient: Int, part: Int): Long =
+            (messageId shl 16) or ((recipient.toLong() and 0xFF) shl 8) or (part.toLong() and 0xFF)
     }
 }

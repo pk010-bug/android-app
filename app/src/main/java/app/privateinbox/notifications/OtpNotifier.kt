@@ -46,7 +46,8 @@ class OtpNotifier(private val context: Context) {
 
         val open = PendingIntents.activity(
             context,
-            notificationId,
+            PendingIntents.Kind.OTP_OPEN,
+            notificationId.toLong(),
             Intent(context, MainActivity::class.java)
                 .setAction(ACTION_OPEN_ROUTE)
                 .putExtra(DeepLinks.EXTRA_ROUTE, "conversation/$conversationId")
@@ -54,7 +55,8 @@ class OtpNotifier(private val context: Context) {
         )
         val copy = PendingIntents.broadcast(
             context,
-            notificationId,
+            PendingIntents.Kind.OTP_COPY,
+            notificationId.toLong(),
             Intent(context, CopyOtpReceiver::class.java)
                 .setAction(CopyOtpReceiver.ACTION_COPY)
                 .putExtra(CopyOtpReceiver.EXTRA_CODE, code)

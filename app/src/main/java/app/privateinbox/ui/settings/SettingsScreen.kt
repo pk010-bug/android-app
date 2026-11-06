@@ -34,6 +34,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import app.privateinbox.data.prefs.ThemeMode
+import app.privateinbox.security.integrity.IntegrityCategory
+import app.privateinbox.security.integrity.IntegrityRisk
 import app.privateinbox.sms.DefaultSmsApp
 import app.privateinbox.ui.common.LocalContainer
 import app.privateinbox.ui.lock.AppLock
@@ -70,10 +72,14 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
     val scam by s.scamWarnings.collectAsState(initial = true)
     val widgetNames by s.widgetShowNames.collectAsState(initial = false)
     val hideLock by s.hideOnLockScreen.collectAsState(initial = true)
+    val contentFree by s.contentFreeWhenLocked.collectAsState(initial = true)
+    val autoMms by s.autoDownloadMmsFromContacts.collectAsState(initial = true)
     val days by s.recycleBinDays.collectAsState(initial = 30)
     val theme by s.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
     var isDefault by remember { mutableStateOf(DefaultSmsApp.isDefault(context)) }
     var lockError by remember { mutableStateOf<String?>(null) }
+    val integrity by c.integrity.latest.collectAsState()
+    val rootDismissed by s.rootNoticeDismissedSignals.collectAsState(initial = null)
     val role = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         isDefault = DefaultSmsApp.isDefault(context)
         if (isDefault) Workers.importNow(context)
@@ -107,6 +113,35 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
             }
         }
         lockError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+        integrity?.let { r ->
+            // I-01: local integrity signals. High risk is shown while it lasts; root is informational and dismissible.
+            if (r.risk == IntegrityRisk.HIGH) {
+                ListItem(
+                    headlineContent = { Text("Security check: app may be inspected or modified") },
+                    supportingContent = {
+                        Text(
+                            "A hooking tool, debugger, or non-official app signature was detected. PrivateInbox asks for " +
+                                "your screen lock again and before sensitive actions. Reinstall from a trusted source if unexpected.",
+                        )
+                    },
+                    leadingContent = { Icon(Icons.Outlined.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                )
+            }
+            val rootSignals = r.signals.filter { it.category == IntegrityCategory.ROOT }.toSet()
+            val rootKey = r.key(rootSignals)
+            if (rootSignals.isNotEmpty() && rootDismissed != null && rootDismissed != rootKey) {
+                ListItem(
+                    headlineContent = { Text("This phone appears to be rooted") },
+                    supportingContent = {
+                        Text(
+                            "That's fine, and PrivateInbox works normally. Just note that apps granted root access can read " +
+                                "any app's data, including your messages. Only grant root to apps you trust.",
+                        )
+                    },
+                    trailingContent = { TextButton(onClick = { scope.launch { s.setRootNoticeDismissedSignals(rootKey) } }) { Text("Dismiss") } },
+                )
+            }
+        }
         if (appLock) {
             Choice("Lock after leaving the app", timeoutLabel(timeout), listOf(0, 30, 60, 300, 900).map { it to timeoutLabel(it) }) {
                 if (it != timeout) reauth("Change when the app locks") { scope.launch { s.setLockTimeoutSec(it) } }
@@ -119,6 +154,14 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
         Toggle("Hide notifications on lock screen", "Messages, codes and bill reminders never appear on the lock screen, even if your phone is set to show sensitive content. You still get the sound/vibration.", hideLock) { on ->
             if (on) scope.launch { s.setHideOnLockScreen(true) }
             else reauth("Show notifications on the lock screen") { scope.launch { s.setHideOnLockScreen(false) } }
+        }
+        Toggle(
+            "Content-free notifications while locked",
+            "While app lock is on, notifications only say \"New message\": no sender, text or code, even with the phone unlocked.",
+            contentFree,
+        ) { on ->
+            if (on) scope.launch { s.setContentFreeWhenLocked(true) }
+            else reauth("Show message text in notifications") { scope.launch { s.setContentFreeWhenLocked(false) } }
         }
         Toggle("Confirm before sending", "Show a final check (recipient, SIM, text) before any message is sent.", confirmSend) { on ->
             // Turning confirmation off enables one-tap send: needs a fresh authentication.
@@ -140,6 +183,12 @@ fun SettingsScreen(onNavigate: (SettingsDest) -> Unit) {
             // Showing contact names on the home screen is a privacy downgrade: needs a fresh authentication.
             if (on) reauth("Show names on the home-screen widget", apply) else apply()
         }
+
+        Toggle(
+            "Auto-download MMS from contacts",
+            "Picture messages from contacts and people you've texted download when they arrive. Unknown senders always need a tap (with a warning); blocked senders are never downloaded.",
+            autoMms,
+        ) { scope.launch { s.setAutoDownloadMmsFromContacts(it) } }
 
         Section("Inbox")
         Nav("Smart inbox rules", "See and edit how messages are sorted") { onNavigate(SettingsDest.RULES) }

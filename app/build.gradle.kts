@@ -8,6 +8,31 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+/**
+ * I-01 tamper check: SHA-256 of the RELEASE signing certificate(s), checked at runtime by
+ * security/integrity/IntegrityChecker. Comma-separated for key rotation / several signers.
+ *
+ * Set in the project's gradle.properties (privateinbox.releaseCertSha256, since v1.0.3) or the
+ * PRIVATEINBOX_RELEASE_CERT_SHA256 environment variable. Get it with:
+ *     keytool -list -v -keystore release/privateinbox-release.jks -alias privateinbox   (SHA256 line)
+ *     apksigner verify --print-certs app-release.apk                                    (SHA-256 digest)
+ * Left empty, release builds skip the pin (and the build prints a warning). Debug builds never pin.
+ */
+val releaseCertSha256: String = (
+    (project.findProperty("privateinbox.releaseCertSha256") as String?)
+        ?: System.getenv("PRIVATEINBOX_RELEASE_CERT_SHA256")
+        ?: ""
+    ).trim()
+releaseCertSha256.split(',', ';').map { it.trim() }.filter { it.isNotEmpty() }.forEach { d ->
+    val hex = d.replace(":", "")
+    if (hex.length != 64 || !hex.all { it in '0'..'9' || it.lowercaseChar() in 'a'..'f' }) {
+        throw GradleException("privateinbox.releaseCertSha256: '$d' is not a SHA-256 digest")
+    }
+}
+if (releaseCertSha256.isEmpty()) {
+    logger.warn("PrivateInbox: privateinbox.releaseCertSha256 is not set; release builds will skip the signing-certificate check (I-01).")
+}
+
 android {
     namespace = "app.privateinbox"
     compileSdk = 35
@@ -16,15 +41,18 @@ android {
         applicationId = "app.privateinbox"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "1.0.2"
+        versionCode = 6
+        versionName = "1.0.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+        // Empty = no pin (debug builds). Release overrides below.
+        buildConfigField("String", "EXPECTED_SIGNING_CERT_SHA256", "\"\"")
     }
 
     buildTypes {
         release {
+            buildConfigField("String", "EXPECTED_SIGNING_CERT_SHA256", "\"$releaseCertSha256\"")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -43,7 +71,7 @@ android {
     }
     buildFeatures {
         compose = true
-        buildConfig = false
+        buildConfig = true // EXPECTED_SIGNING_CERT_SHA256 for the I-01 tamper check
     }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
@@ -84,6 +112,10 @@ abstract class VerifyManifestPermissionsTask : DefaultTask() {
     fun verify() {
         val forbidden = listOf(
             "android.permission.INTERNET",
+            "android.permission.ACCESS_NETWORK_STATE",
+            "android.permission.CHANGE_NETWORK_STATE",
+            "android.permission.ACCESS_WIFI_STATE",
+            "android.permission.CHANGE_WIFI_STATE",
             "android.permission.CALL_PHONE",
             "android.permission.READ_PHONE_NUMBERS",
             "android.permission.ACCESS_FINE_LOCATION",
@@ -141,6 +173,9 @@ dependencies {
     implementation(libs.androidx.biometric)
     implementation(libs.androidx.fragment.ktx)
     implementation(libs.androidx.work.runtime.ktx)
+
+    // F-05: linear-time regex engine (pure Java, no dependencies, no network) for user-written rules.
+    implementation(libs.google.re2j)
 
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)

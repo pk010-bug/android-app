@@ -51,6 +51,21 @@ class MmsPduTest {
         assertArrayEquals(jpeg, p.parts[1].data)
     }
 
+    @Test fun deferredNotifyRespAndAcknowledgeEncode() {
+        val deferred = MmsPdu.encodeNotifyResp("abc", MmsPdu.STATUS_DEFERRED)
+        val p = MmsPdu.parse(deferred)
+        assertEquals(MmsPdu.TYPE_NOTIFYRESP_IND, p.messageType)
+        assertEquals("abc", p.transactionId)
+        val bytes = deferred.map { it.toInt() and 0xFF }
+        val i = bytes.indexOf(MmsPdu.H_STATUS)
+        assertEquals(MmsPdu.STATUS_DEFERRED, bytes[i + 1])
+        val retrieved = MmsPdu.encodeNotifyResp("abc").map { it.toInt() and 0xFF }
+        assertEquals(MmsPdu.STATUS_RETRIEVED, retrieved[retrieved.indexOf(MmsPdu.H_STATUS) + 1])
+        val ack = MmsPdu.parse(MmsPdu.encodeAcknowledgeInd("abc"))
+        assertEquals(MmsPdu.TYPE_ACKNOWLEDGE_IND, ack.messageType)
+        assertEquals("abc", ack.transactionId)
+    }
+
     @Test fun notifyRespEncodes() {
         val p = MmsPdu.parse(MmsPdu.encodeNotifyResp("abc"))
         assertEquals(MmsPdu.TYPE_NOTIFYRESP_IND, p.messageType)

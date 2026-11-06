@@ -13,12 +13,12 @@ and login codes. These rules exist so that data can never become someone else's.
 | Local storage only | Room database + DataStore in the app's private directory. |
 | Explainable categories | Plain JSON regex rules; each message stores the id of the rule that classified it. |
 | Quiet logs | Only `SafeLog` may log; it redacts numbers, sender IDs and emails. Unit tests fail on raw `Log`/`println` or on passing body/sender/code to the logger. |
-| Encrypted at rest | Room database encrypted with SQLCipher (AES-256). Random 256-bit passphrase, wrapped by an AndroidKeyStore AES-GCM key, kept in `noBackupFilesDir`. If the Keystore key is ever lost, the local cache is wiped and rebuilt rather than left unprotected. |
+| Encrypted at rest | Room database encrypted with SQLCipher (AES-256). Random 256-bit passphrase, wrapped by an AndroidKeyStore AES-GCM key, kept in `noBackupFilesDir`. Only if the Keystore key is *permanently* lost (invalidated, deleted, or the wrapped key no longer verifies) is the local cache wiped and rebuilt from the system SMS store; a temporary Keystore error shows a "Try again" screen and deletes nothing. |
 | Nothing sends by itself | Other apps can only prefill a draft (`sms:`, `smsto:`, `mms:`, `mmsto:`, SEND/SENDTO, share). Auto-send extras are ignored and the user is told. Sending requires a single-use confirmation created by the Send button. |
 | No direct calls | `CALL_PHONE` is not requested (and is stripped/blocked at build time). Calling opens the system dialer with `ACTION_DIAL`; you press call there. |
-| Attachments | Only `content://` from other apps. `file://` and URIs from our own FileProvider/package are refused. Images are identified by their bytes, capped at 5 MiB, and copied into private storage immediately. |
-| Lock-screen-safe OTPs | Codes never appear on the lock screen. With "Hide OTPs" on (default) notifications are secret on the lock screen and omit the digits entirely. Copied codes are flagged sensitive (Android 13+). |
-| Screenshot blocking | `FLAG_SECURE` on OTP, finance and conversation screens when app lock or "Hide OTPs" is on. |
+| Attachments | Only `content://` from other apps. `file://` and URIs from our own FileProvider/package are refused. Images are identified by their bytes and capped at 5 MiB. A shared file is only checked when it arrives; it is copied into private storage when you tap "Attach" in the draft, and scratch copies are swept. |
+| Lock-screen-safe OTPs | Codes never appear on the lock screen. With "Hide OTPs" on (default) notifications are secret on the lock screen and omit the digits entirely, and codes are masked in Inbox / Search / Recycle-bin previews. While app lock is on, notifications are content-free by default ("New message" only: no sender, text or code). Copied codes and message text are flagged sensitive (Android 13+) and cleared from the clipboard after 60 s / 2 min. |
+| Screenshot blocking | With app lock on, every screen is `FLAG_SECURE` (and hidden in Recents). With "Hide OTPs" on, OTP, finance and conversation screens are `FLAG_SECURE`. |
 | Backups you control | Backups are created only when you ask, encrypted with your password (PBKDF2-HMAC-SHA256, 600k iterations → AES-256-GCM, header with KDF parameters authenticated; new backups need a strong 12+ character password, older 310k backups still restore), and saved only where you choose with the system file picker. The app never uploads them. |
 | Blocking & scam checks are local | Block lists, rules, and scam heuristics run on-device; there are no reputation lookups. |
 | Minimal exported surface | Only the main activity and the three components the SMS role needs are reachable by other apps, each guarded by a system-only permission. |
@@ -35,19 +35,28 @@ and login codes. These rules exist so that data can never become someone else's.
 
 Merged in by AndroidX libraries (harmless without network access):
 
-- `USE_BIOMETRIC` / `USE_FINGERPRINT` (Biometric) — for the planned app lock.
-- `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE`, `ACCESS_NETWORK_STATE` (WorkManager)
-  — local background jobs. `ACCESS_NETWORK_STATE` only lets WorkManager *read* connectivity state;
-  it cannot send or receive anything.
+- `USE_BIOMETRIC` / `USE_FINGERPRINT` (Biometric) — for app lock.
+- `WAKE_LOCK`, `RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE` (WorkManager) — local background jobs.
 
-Nothing else. In particular: no `INTERNET`, no `CALL_PHONE`, no location, no account access.
+Nothing else. In particular: no `INTERNET`, no `ACCESS_NETWORK_STATE` / `CHANGE_NETWORK_STATE` /
+Wi-Fi state (WorkManager's `ACCESS_NETWORK_STATE` is stripped with `tools:node="remove"`; no job
+uses a network constraint), no `CALL_PHONE`, no location, no account access. The Gradle
+`verify<Variant>ManifestPermissions` task fails the build if any of these reappear in the merged manifest.
 
 ### MMS and the network
 
 MMS travels over mobile data, but PrivateInbox never opens a connection. It hands a request to
 Android's built-in MMS service (`SmsManager.downloadMultimediaMessage` / `sendMultimediaMessage`),
-which talks to your carrier. The only things sent without a tap are protocol acknowledgements
-the carrier requires ("message retrieved", with read/delivery reports explicitly *refused*).
+which talks to your carrier. Picture messages from **contacts or people you've texted** download
+when they arrive ("Auto-download MMS from contacts", on by default; turn it off to tap for every
+MMS). From anyone else you see a "Picture message, not downloaded" placeholder and tap Download,
+after a warning for unknown senders. Blocked senders are never downloaded. The only things sent
+without a tap are protocol acknowledgements the carrier requires: "deferred" for a message left on
+the carrier's server (so it stops re-sending the notification), and "retrieved" / acknowledge after
+a download, always with read/delivery reports explicitly *refused*.
+
+Runtime integrity checks (root, hooking, debugger, signing certificate) run entirely on the phone
+by reading local files and the app's own package info; they make no network request and report nothing.
 Photos you send are re-encoded, which strips EXIF metadata such as GPS location. Received images
 are stored in app-private, no-backup storage and deleted when the message is purged.
 

@@ -143,6 +143,10 @@ interface MessageDao {
 
     @Query("DELETE FROM messages WHERE id IN (:ids)")
     suspend fun hardDelete(ids: List<Long>)
+
+    /** True if the user ever sent a message in this conversation (F-04 "known sender"). */
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE conversationId = :conversationId AND incoming = 0)")
+    suspend fun hasOutgoing(conversationId: Long): Boolean
 }
 
 @Dao
@@ -213,6 +217,10 @@ interface BlockedSenderDao {
     @Query("SELECT EXISTS(SELECT 1 FROM blocked_senders WHERE addressKey = :key)")
     suspend fun isBlocked(key: String): Boolean
 
+    /** F-12: checks the current key and the pre-v1.0.3 (last-10-digit) key of the same address. */
+    @Query("SELECT EXISTS(SELECT 1 FROM blocked_senders WHERE addressKey IN (:keys))")
+    suspend fun isBlockedAny(keys: List<String>): Boolean
+
     @Upsert
     suspend fun upsert(entity: BlockedSenderEntity)
 
@@ -236,6 +244,48 @@ interface MmsPartDao {
 
     @Query("SELECT * FROM mms_parts")
     suspend fun getAll(): List<MmsPartEntity>
+}
+
+@Dao
+interface PendingMmsDao {
+    @Query("SELECT p.* FROM pending_mms p JOIN messages m ON m.id = p.messageId WHERE m.conversationId = :conversationId")
+    fun observeForConversation(conversationId: Long): Flow<List<PendingMmsEntity>>
+
+    @Query("SELECT * FROM pending_mms WHERE messageId = :messageId")
+    suspend fun forMessage(messageId: Long): PendingMmsEntity?
+
+    @Query("SELECT EXISTS(SELECT 1 FROM pending_mms WHERE transactionId = :transactionId)")
+    suspend fun existsTransaction(transactionId: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(p: PendingMmsEntity): Long
+
+    @Query("UPDATE pending_mms SET state = :state, updatedAt = :now WHERE messageId = :messageId")
+    suspend fun setState(messageId: Long, state: PendingMmsState, now: Long)
+
+    /**
+     * Atomically claims a WAITING/FAILED row, or a DOWNLOADING row stuck since before
+     * [staleBefore], for a new download attempt; returns 1 if this caller won.
+     */
+    @Query(
+        "UPDATE pending_mms SET state = 'DOWNLOADING', updatedAt = :now, attempt = attempt + 1 " +
+            "WHERE messageId = :messageId AND (state != 'DOWNLOADING' OR updatedAt < :staleBefore)",
+    )
+    suspend fun claim(messageId: Long, now: Long, staleBefore: Long): Int
+
+    /** A failed attempt only counts if it is still the current one (late callbacks are ignored). */
+    @Query(
+        "UPDATE pending_mms SET state = 'FAILED', updatedAt = :now " +
+            "WHERE messageId = :messageId AND attempt = :attempt AND state = 'DOWNLOADING'",
+    )
+    suspend fun failAttempt(messageId: Long, attempt: Int, now: Long): Int
+
+    /** Startup / periodic reset: downloads with no callback since [staleBefore] become retryable. */
+    @Query("UPDATE pending_mms SET state = 'FAILED', updatedAt = :now WHERE state = 'DOWNLOADING' AND updatedAt < :staleBefore")
+    suspend fun resetStuck(staleBefore: Long, now: Long): Int
+
+    @Query("UPDATE pending_mms SET deferredSent = 1 WHERE messageId = :messageId")
+    suspend fun markDeferredSent(messageId: Long)
 }
 
 @Dao

@@ -12,6 +12,10 @@ class Converters {
     @TypeConverter fun txTypeToString(value: TransactionType): String = value.name
     @TypeConverter fun stringToTxType(value: String): TransactionType = TransactionType.valueOf(value)
 
+    @TypeConverter fun pendingMmsToString(value: PendingMmsState): String = value.name
+    @TypeConverter fun stringToPendingMms(value: String): PendingMmsState =
+        runCatching { PendingMmsState.valueOf(value) }.getOrDefault(PendingMmsState.FAILED)
+
     @TypeConverter fun schedToString(value: ScheduledStatus): String = value.name
     @TypeConverter fun stringToSched(value: String): ScheduledStatus =
         runCatching { ScheduledStatus.valueOf(value) }.getOrDefault(ScheduledStatus.CANCELLED)

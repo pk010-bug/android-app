@@ -63,7 +63,7 @@ object InboxWidget {
                 setOnClickPendingIntent(
                     R.id.widget_root,
                     PendingIntents.activity(
-                        context, 9_000_001,
+                        context, PendingIntents.Kind.WIDGET_OPEN, 0L,
                         Intent(context, MainActivity::class.java)
                             .setAction(OtpNotifier.ACTION_OPEN_ROUTE)
                             .putExtra(DeepLinks.EXTRA_ROUTE, "inbox")

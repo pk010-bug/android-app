@@ -20,10 +20,13 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
         val file = store.pduFile(intent.getStringExtra(EXTRA_FILE)) ?: return
         val tid = intent.getStringExtra(EXTRA_TID)
         val subId = intent.getIntExtra(EXTRA_SUB, -1).takeIf { it >= 0 }
+        val placeholder = intent.getLongExtra(EXTRA_PLACEHOLDER, -1L)
+        val attempt = intent.getIntExtra(EXTRA_ATTEMPT, 0)
         val ok = resultCode == Activity.RESULT_OK
         val pending = goAsync()
         val app = context.applicationContext as PrivateInboxApp
         CoroutineScope(Dispatchers.IO).launch {
+            var done = false
             try {
                 if (!ok || !file.isFile || file.length() !in 1..MmsStore.MAX_PDU_BYTES.toLong()) {
                     SafeLog.w(TAG, "mms download failed ok=$ok")
@@ -31,14 +34,24 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
                 }
                 val pdu = MmsPdu.parse(file.readBytes())
                 if (pdu.messageType != MmsPdu.TYPE_RETRIEVE_CONF) return@launch
-                app.container.receiveMms(pdu, subId)
-                tid?.let { MmsTransport(context.applicationContext, store).acknowledge(it, subId) }
+                if (placeholder > 0) {
+                    // null = late duplicate of an attempt that was already handled: nothing to ack.
+                    val afterDeferred = app.container.finishMmsDownload(placeholder, pdu, subId, attempt)
+                    done = true
+                    if (afterDeferred != null) tid?.let { MmsTransport(context.applicationContext, store).acknowledge(it, subId, afterDeferred) }
+                } else {
+                    app.container.receiveMms(pdu, subId)
+                    done = true
+                    tid?.let { MmsTransport(context.applicationContext, store).acknowledge(it, subId) }
+                }
             } catch (e: MmsPdu.MalformedPdu) {
                 SafeLog.w(TAG, "downloaded mms was malformed")
             } catch (t: Throwable) {
                 // Includes OutOfMemoryError from hostile content: never crash on a received MMS.
                 SafeLog.w(TAG, "failed to process mms: ${t.javaClass.simpleName}")
             } finally {
+                // Lets the user retry from the placeholder.
+                if (!done && placeholder > 0) runCatching { app.container.finishMmsDownload(placeholder, null, subId, attempt) }
                 runCatching { file.delete() }
                 runCatching { store.sweepPdus() }
                 pending.finish()
@@ -51,6 +64,8 @@ class MmsDownloadedReceiver : BroadcastReceiver() {
         const val EXTRA_FILE = "file"
         const val EXTRA_TID = "tid"
         const val EXTRA_SUB = "sub"
+        const val EXTRA_PLACEHOLDER = "placeholder"
+        const val EXTRA_ATTEMPT = "attempt"
         private const val TAG = "MmsDownloaded"
     }
 }

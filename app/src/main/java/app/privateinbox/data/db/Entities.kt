@@ -103,6 +103,47 @@ data class MmsPartEntity(
     val sizeBytes: Long = 0,
 )
 
+/** Download state of an MMS whose notification arrived but whose content was not fetched yet. */
+enum class PendingMmsState { WAITING, DOWNLOADING, FAILED }
+
+/**
+ * F-04: an incoming MMS notification (M-Notification.ind) that has NOT been downloaded. MMS content
+ * is fetched when the user taps Download on the placeholder message [messageId], or on arrival for
+ * contacts if "Auto-download MMS from contacts" is on; never for blocked senders, and only after a
+ * warning for unknown senders. [contentLocation] is the sender-supplied MMSC URL; the system MMS
+ * service (not this app) fetches it.
+ *
+ * v5: [updatedAt] is when [state] last changed (a DOWNLOADING row older than
+ * MmsDownloadPolicy.STUCK_AFTER_MS can be retried), [attempt] tags each download so a late
+ * callback from an earlier attempt can't overwrite a newer one, and [deferredSent] records that
+ * the carrier was told "deferred" (so the final ack is M-Acknowledge.ind).
+ */
+@Entity(
+    tableName = "pending_mms",
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["messageId"], unique = true)],
+)
+data class PendingMmsEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val messageId: Long,
+    val contentLocation: String,
+    val transactionId: String,
+    val subscriptionId: Int? = null,
+    val sizeBytes: Long? = null,
+    val state: PendingMmsState = PendingMmsState.WAITING,
+    val createdAt: Long,
+    @androidx.room.ColumnInfo(defaultValue = "0") val updatedAt: Long = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val attempt: Int = 0,
+    @androidx.room.ColumnInfo(defaultValue = "0") val deferredSent: Boolean = false,
+)
+
 enum class ScheduledStatus { PENDING, SENT, FAILED, CANCELLED }
 
 /**

@@ -23,6 +23,16 @@
 
     <!-- Explicitly refuse network access, even if a dependency requests it. -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
+    <!--
+        No network-state access either. WorkManager merges ACCESS_NETWORK_STATE for network
+        constraints, which this app never uses (no worker sets a network constraint; a source test
+        enforces it). MMS download/send is done by the system MMS service via SmsManager, which owns
+        the carrier connection, so the app needs none of these.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" tools:node="remove" />
     <!-- No direct calling: the dialer is opened with ACTION_DIAL instead. -->
     <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove" />
 
