@@ -20,7 +20,8 @@ categories, surfaces one-time passwords, and (soon) turns bank SMS into spending
    (`app/src/main/assets/default_rules.json`). Every message records which rule placed it, so
    you can always see *why* it landed where it did.
 6. **Minimum permissions.** Only what the default-SMS-app role needs, plus read-only contacts
-   for sender names and local notifications.
+   for sender names, local notifications, and (only when you open the SIM picker) phone state
+   to list your SIMs.
 7. **Logs never contain content.** All logging goes through `SafeLog`, which redacts numbers,
    sender IDs and emails; unit tests fail if code logs any other way.
 8. **Nothing sends by itself.** Links and shares from other apps (`sms:`, `smsto:`, share sheet…)
@@ -53,6 +54,8 @@ The longer version lives in [docs/privacy.md](docs/privacy.md).
 app/src/main/java/app/privateinbox/
 ├── PrivateInboxApp.kt          # Application + tiny manual DI
 ├── MainActivity.kt             # Compose entry point; triages every incoming Intent
+├── AppContainer.kt             # Manual DI + receive pipeline
+├── backup/                     # Encrypted backup format + export/restore
 ├── compose/                    # IntentTriage: external intents → drafts only
 ├── attachments/                # AttachmentPolicy (URI + magic bytes + size) and importer
 ├── calls/                      # Dialer (ACTION_DIAL only)
@@ -62,14 +65,20 @@ app/src/main/java/app/privateinbox/
 ├── domain/                     # Category enum, plain models
 ├── data/
 │   ├── db/                     # Room entities, DAOs, database
-│   ├── rules/                  # RuleEngine + JSON regex categorizer
+│   ├── repo/                   # MessageRepository: single write path
+│   ├── telephony/              # System SMS provider + contacts bridge
+│   ├── scam/                   # ScamDetector heuristics
+│   ├── finance/                # Transaction + bill parsers, monthly summary
+│   ├── rules/                  # RuleEngine, JSON defaults + user rules
 │   ├── otp/                    # OtpExtractor
 │   └── prefs/                  # DataStore settings
-├── sms/                        # SmsSender (tap-only), receivers/services (stubs), role helper
+├── sms/                        # SmsSender (tap-only), receivers, SIM manager, role helper
+├── work/                       # Import, recycle-bin purge, bill reminder workers
 └── ui/
     ├── navigation/             # NavHost + bottom bar (Inbox / Finance / Alerts / Settings)
     ├── theme/                  # Material 3 colours & type
-    ├── inbox/  conversation/  compose/  finance/  alerts/  settings/
+    ├── inbox/ conversation/ compose/ finance/ alerts/ settings/
+    ├── search/ rules/ blocked/ recycle/ backup/ onboarding/ lock/ common/
 ```
 
 ## Open in Android Studio
@@ -85,27 +94,31 @@ From the command line: `./gradlew testDebugUnitTest` runs the unit tests and
 pointing at your SDK). Both run `verifyDebugManifestPermissions`, which fails the build if the
 merged manifest ever requests `INTERNET`, `CALL_PHONE`, location, or the advertising ID.
 
-## MVP roadmap
+## Features
 
-**Phase 1 — Inbox (current focus)**
-- [x] Project scaffold, privacy guard, theme, navigation
-- [x] JSON rule engine: Important / Personal / OTP / Promotional / Spam / Unknown
-- [x] Offline OTP extractor with tests
-- [ ] Become default SMS app (onboarding + role request)
-- [ ] Import existing SMS from the Telephony provider into Room
-- [ ] Live inbox with category pills, conversation view, send/reply
-- [ ] OTP notification with copy action (code hidden on lock screen by default)
+**Shipped (works on-device, builds and passes 84 unit tests):**
+- Default SMS app: onboarding + role request, receive (`SMS_DELIVER`), write to the system SMS
+  store, incremental import of existing messages, read-only mode when not default
+- Smart inbox: Important / Personal / OTP / Promotional / Spam / Unknown, with unread counts per
+  category, pin, mute, archive, mark read, and "Move to category" (learns a sender rule)
+- Conversation view: chat bubbles, OTP "copy code" chip (sensitive clipboard), "Why is this
+  here?" explanations, scam warning banner with reasons, dial-only call button
+- Sending: tap-only, with a confirmation dialog (recipient, SIM, text) on by default; dual-SIM
+  picker; delivery status (Sending / Sent / Failed)
+- Smart inbox rules manager: your own regex rules (always win), built-in rules shown read-only,
+  rule tester, re-apply to all messages
+- Scam heuristics: short/IP/APK links, scam-prone domains, KYC/blocking threats, prizes,
+  "share your OTP", pay-to-receive, brand impersonation from personal numbers, job scams
+- Finance dashboard from bank/card/UPI SMS: monthly spent/received, top merchants, transactions
+- Bills & alerts: due-date + amount detection, reminders 3 days before, mark paid; recent OTPs;
+  suspicious messages
+- Search, block/unblock, recycle bin (restore / delete forever / auto-purge after 7-90 days)
+- Encrypted local backup & restore (password, AES-256-GCM + PBKDF2, file you choose)
+- App lock (biometric / device credential) with timeout; theme (system / light / dark)
 
-**Phase 2 — Control**
-- [ ] Rule editor (add/edit/disable rules, "why is this here?")
-- [x] Security hardening: tap-only sending, attachment policy, dial-only calls, minimal exported
-      surface, immutable PendingIntents, SQLCipher + Keystore, lock-screen-safe OTPs, SafeLog
-- [ ] Biometric app lock
-- [ ] Local encrypted export/import of rules and data
-
-**Phase 3 — Finance & bills**
-- [ ] Parse bank/UPI SMS into transactions; monthly spend summaries
-- [ ] Bill / EMI due-date detection and local reminders (WorkManager)
+**Still missing:** MMS send/receive, group (multi-recipient) messaging, scheduled send,
+per-conversation notification sounds, contact picker in composer, home-screen widget,
+instrumented UI tests, signed reproducible release build (planned as a separate step).
 
 ## License
 

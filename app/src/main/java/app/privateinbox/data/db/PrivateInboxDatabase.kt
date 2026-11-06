@@ -13,6 +13,9 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
  * Single on-device database, encrypted at rest with SQLCipher (AES-256).
  * The passphrase is random, wrapped by an AndroidKeyStore key (see [DatabaseKeyManager]),
  * and stored in noBackupFilesDir. The DB is also excluded from all backups.
+ *
+ * Schema version 1 is still pre-release, so it is edited in place. Once a build ships, every
+ * change must add a Migration (no destructive fallback: this is user data).
  */
 @Database(
     entities = [
@@ -20,6 +23,8 @@ import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
         MessageEntity::class,
         TransactionEntity::class,
         RuleEntity::class,
+        BillEntity::class,
+        BlockedSenderEntity::class,
     ],
     version = 1,
     exportSchema = true,
@@ -30,6 +35,8 @@ abstract class PrivateInboxDatabase : RoomDatabase() {
     abstract fun messageDao(): MessageDao
     abstract fun transactionDao(): TransactionDao
     abstract fun ruleDao(): RuleDao
+    abstract fun billDao(): BillDao
+    abstract fun blockedSenderDao(): BlockedSenderDao
 
     companion object {
         private const val NAME = "privateinbox.db"

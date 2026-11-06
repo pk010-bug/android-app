@@ -2,11 +2,25 @@ package app.privateinbox
 
 import android.content.Intent
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import android.os.SystemClock
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
+import app.privateinbox.data.prefs.ThemeMode
+import app.privateinbox.ui.common.LocalContainer
+import app.privateinbox.ui.lock.LockScreen
+import app.privateinbox.ui.onboarding.OnboardingScreen
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import app.privateinbox.attachments.AttachmentImporter
 import app.privateinbox.compose.AndroidIntentReader
 import app.privateinbox.compose.IntentTriage
@@ -26,28 +40,67 @@ import kotlinx.coroutines.withContext
  * Every incoming Intent is treated as untrusted: it can open a validated route or prefill a
  * draft, never send anything.
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private val pendingDraft = mutableStateOf<Draft?>(null)
     private val pendingRoute = mutableStateOf<String?>(null)
+    private val locked = mutableStateOf(true)
+    private var backgroundedAt = 0L
+
+    private val container get() = (application as PrivateInboxApp).container
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) handle(intent)
-        // TODO(security): gate content behind BiometricPrompt when app lock is enabled
-        //  (requires FragmentActivity; see ui/settings).
+        lifecycleScope.launch { locked.value = container.settings.appLockEnabled.first() }
         setContent {
-            PrivateInboxTheme {
-                PrivateInboxNavHost(
-                    pendingDraft = pendingDraft.value,
-                    pendingRoute = pendingRoute.value,
-                    onExternalConsumed = {
-                        pendingDraft.value = null
-                        pendingRoute.value = null
-                    },
-                )
+            val settings = container.settings
+            val theme by settings.themeMode.collectAsState(initial = ThemeMode.SYSTEM)
+            // null until DataStore loads, so we never flash content before deciding to lock.
+            val lockOn by remember { settings.appLockEnabled.map<Boolean, Boolean?> { it } }.collectAsState(initial = null)
+            val onboarded by remember { settings.onboardingDone.map<Boolean, Boolean?> { it } }.collectAsState(initial = null)
+            val scope = rememberCoroutineScope()
+            val dark = when (theme) {
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
             }
+            CompositionLocalProvider(LocalContainer provides container) {
+                PrivateInboxTheme(darkTheme = dark) {
+                    Surface {
+                        when {
+                            lockOn == null || onboarded == null -> Unit
+                            lockOn == true && locked.value -> LockScreen(onUnlocked = { locked.value = false })
+                            onboarded == false -> OnboardingScreen(onDone = { scope.launch { settings.setOnboardingDone(true) } })
+                            else -> PrivateInboxNavHost(
+                                pendingDraft = pendingDraft.value,
+                                pendingRoute = pendingRoute.value,
+                                onExternalConsumed = {
+                                    pendingDraft.value = null
+                                    pendingRoute.value = null
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        backgroundedAt = SystemClock.elapsedRealtime()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        if (backgroundedAt == 0L) return
+        lifecycleScope.launch {
+            val s = container.settings
+            if (!s.appLockEnabled.first()) return@launch
+            val timeoutMs = s.lockTimeoutSec.first() * 1000L
+            if (SystemClock.elapsedRealtime() - backgroundedAt >= timeoutMs) locked.value = true
         }
     }
 

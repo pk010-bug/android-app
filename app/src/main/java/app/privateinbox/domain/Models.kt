@@ -12,7 +12,7 @@ data class SmsMessage(
 /** Result of running the rule engine on a message. */
 data class Classification(
     val category: Category,
-    /** Id of the rule that matched, or null when nothing matched (→ UNKNOWN). */
+    /** Id of the rule that matched, or null when nothing matched (UNKNOWN). */
     val ruleId: String?,
 )
 
@@ -25,11 +25,4 @@ data class OtpMatch(
 
 enum class TransactionType { DEBIT, CREDIT }
 
-/** Placeholder finance model; parsing bank SMS comes after the inbox MVP. */
-data class FinanceEntry(
-    val amountMinor: Long,
-    val currency: String,
-    val type: TransactionType,
-    val merchant: String?,
-    val timestampMillis: Long,
-)
+enum class MessageStatus { RECEIVED, PENDING, SENT, FAILED, DELIVERED }

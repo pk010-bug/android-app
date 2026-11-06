@@ -1,18 +1,17 @@
 package app.privateinbox
 
 import android.app.Application
-import app.privateinbox.data.db.PrivateInboxDatabase
-import app.privateinbox.data.prefs.SettingsStore
-import app.privateinbox.data.rules.AssetRuleLoader
-import app.privateinbox.data.rules.RuleEngine
+import app.privateinbox.work.Workers
 
 /**
- * Application entry point and tiny manual DI container.
- * Everything here is local: no SDK initialisation, no telemetry.
+ * Application entry point. Everything here is local: no SDK initialisation, no telemetry.
  */
 class PrivateInboxApp : Application() {
 
-    val database: PrivateInboxDatabase by lazy { PrivateInboxDatabase.get(this) }
-    val settings: SettingsStore by lazy { SettingsStore(this) }
-    val ruleEngine: RuleEngine by lazy { AssetRuleLoader.loadDefault(this) }
+    val container: AppContainer by lazy { AppContainer(this) }
+
+    override fun onCreate() {
+        super.onCreate()
+        Workers.schedulePeriodic(this)
+    }
 }

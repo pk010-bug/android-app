@@ -5,23 +5,31 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import app.privateinbox.domain.Category
+import app.privateinbox.domain.MessageStatus
 import app.privateinbox.domain.TransactionType
 
 @Entity(
     tableName = "conversations",
-    indices = [Index(value = ["address"], unique = true)],
+    indices = [Index(value = ["addressKey"], unique = true), Index("lastMessageAt")],
 )
 data class ConversationEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** Normalised sender address / short code. */
+    /** Normalised grouping key, see AddressNormalizer. */
+    val addressKey: String,
+    /** Most recent raw address (what we reply to). */
     val address: String,
     val displayName: String? = null,
     val category: Category = Category.UNKNOWN,
+    /** If set, user pinned this conversation to a category; overrides rules. */
+    val categoryOverride: Category? = null,
     val lastMessagePreview: String = "",
     val lastMessageAt: Long = 0,
     val unreadCount: Int = 0,
     val pinned: Boolean = false,
     val archived: Boolean = false,
+    val muted: Boolean = false,
+    /** Highest scam score among recent incoming messages (0-100). */
+    val scamScore: Int = 0,
 )
 
 @Entity(
@@ -34,22 +42,35 @@ data class ConversationEntity(
             onDelete = ForeignKey.CASCADE,
         ),
     ],
-    indices = [Index("conversationId"), Index("timestamp"), Index("category")],
+    indices = [
+        Index("conversationId"),
+        Index("timestamp"),
+        Index("category"),
+        Index("deletedAt"),
+        Index(value = ["providerId", "incoming"], unique = true),
+    ],
 )
 data class MessageEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val conversationId: Long,
-    /** Row id in the system Telephony provider, if mirrored from there. */
+    /** Row id in the system Telephony provider (sms table), if mirrored from there. */
     val providerId: Long? = null,
     val address: String,
     val body: String,
     val timestamp: Long,
     val incoming: Boolean,
     val read: Boolean = false,
+    val status: MessageStatus = if (incoming) MessageStatus.RECEIVED else MessageStatus.PENDING,
+    val subscriptionId: Int? = null,
     val category: Category = Category.UNKNOWN,
     /** Id of the rule that produced [category], for "why is this here?" transparency. */
     val matchedRuleId: String? = null,
     val otpCode: String? = null,
+    val scamScore: Int = 0,
+    /** Comma-separated reason ids from ScamDetector. */
+    val scamReasons: String = "",
+    /** Recycle bin: non-null means soft-deleted at this time. */
+    val deletedAt: Long? = null,
 )
 
 @Entity(
@@ -59,10 +80,10 @@ data class MessageEntity(
             entity = MessageEntity::class,
             parentColumns = ["id"],
             childColumns = ["messageId"],
-            onDelete = ForeignKey.SET_NULL,
+            onDelete = ForeignKey.CASCADE,
         ),
     ],
-    indices = [Index("messageId"), Index("timestamp")],
+    indices = [Index(value = ["messageId"], unique = true), Index("timestamp")],
 )
 data class TransactionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -73,10 +94,35 @@ data class TransactionEntity(
     val type: TransactionType,
     val merchant: String? = null,
     val accountHint: String? = null,
+    val balanceMinor: Long? = null,
+    val sender: String = "",
     val timestamp: Long,
 )
 
-/** A user-created categorisation rule; overrides bundled defaults when priorities tie. */
+@Entity(
+    tableName = "bills",
+    foreignKeys = [
+        ForeignKey(
+            entity = MessageEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["messageId"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["messageId"], unique = true), Index("dueDate")],
+)
+data class BillEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val messageId: Long?,
+    val biller: String,
+    val amountMinor: Long? = null,
+    /** Due date as epoch millis at local midnight, or null if not found. */
+    val dueDate: Long? = null,
+    val paid: Boolean = false,
+    val createdAt: Long,
+)
+
+/** A user-created categorisation rule; user rules always outrank bundled defaults. */
 @Entity(tableName = "rules")
 data class RuleEntity(
     @PrimaryKey val id: String,
@@ -84,8 +130,15 @@ data class RuleEntity(
     val description: String = "",
     val priority: Int = 0,
     val enabled: Boolean = true,
-    /** Newline-separated regex lists — kept as plain text so users can read/export them. */
+    /** Newline-separated regex lists, kept as plain text so users can read/export them. */
     val senderPatterns: String = "",
     val bodyPatterns: String = "",
     val excludeBodyPatterns: String = "",
+)
+
+@Entity(tableName = "blocked_senders")
+data class BlockedSenderEntity(
+    @PrimaryKey val addressKey: String,
+    val address: String,
+    val createdAt: Long,
 )

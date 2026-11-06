@@ -2,13 +2,17 @@ package app.privateinbox.data.db
 
 import androidx.room.TypeConverter
 import app.privateinbox.domain.Category
+import app.privateinbox.domain.MessageStatus
 import app.privateinbox.domain.TransactionType
 
 class Converters {
-    @TypeConverter fun categoryToString(value: Category): String = value.name
-    @TypeConverter fun stringToCategory(value: String): Category =
-        Category.fromName(value) ?: Category.UNKNOWN
+    @TypeConverter fun categoryToString(value: Category?): String? = value?.name
+    @TypeConverter fun stringToCategory(value: String?): Category? = value?.let { Category.fromName(it) ?: Category.UNKNOWN }
 
     @TypeConverter fun txTypeToString(value: TransactionType): String = value.name
     @TypeConverter fun stringToTxType(value: String): TransactionType = TransactionType.valueOf(value)
+
+    @TypeConverter fun statusToString(value: MessageStatus): String = value.name
+    @TypeConverter fun stringToStatus(value: String): MessageStatus =
+        runCatching { MessageStatus.valueOf(value) }.getOrDefault(MessageStatus.RECEIVED)
 }

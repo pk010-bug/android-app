@@ -47,4 +47,8 @@ device; issues in Android itself or the carrier network.
 | Data at rest | Room encrypted with SQLCipher (AES-256); random 256-bit passphrase wrapped by an AndroidKeyStore AES-GCM key, stored in `noBackupFilesDir`; `allowBackup=false` and all backup / transfer domains excluded | `data/db/PrivateInboxDatabase.kt`, `security/DatabaseKeyManager.kt` |
 | Notifications | OTP digits never on the lock screen (public version without code; `VISIBILITY_SECRET` when "Hide OTPs" is on); OTP notifications time out after 10 min; copied codes flagged sensitive (API 33+ `EXTRA_IS_SENSITIVE`) | `notifications/`, `security/SensitiveClipboard.kt` |
 | Screens | `FLAG_SECURE` on OTP / finance / conversation screens when app lock or "Hide OTPs" is on | `security/SecureScreen.kt` |
+| App lock | BiometricPrompt (biometric or device credential), relocks after a configurable timeout; content is not composed until the lock state is known | `ui/lock/`, `MainActivity.kt` |
+| Send confirmation | Default-on dialog shows recipient, SIM, and text before the single-use send token is minted | `ui/compose/MessageComposer.kt` |
+| Backups | User-initiated only; PBKDF2-HMAC-SHA256 (310k) → AES-256-GCM with authenticated header; zip-bomb and size guards on restore; restored rules re-validated; no upload path exists | `backup/` |
+| Background work | WorkManager jobs are local only (provider import, recycle-bin purge, bill reminders); receivers use `goAsync` and never log content | `work/`, `sms/` |
 | Logging | `SafeLog` is the only logger; redacts digits, sender headers, emails; debug output off unless enabled per tag; tests fail on raw `Log.*`/`println` or on passing body/sender/code to SafeLog | `security/SafeLog.kt`, `LogHygieneTest` |

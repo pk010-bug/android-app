@@ -19,6 +19,8 @@ and login codes. These rules exist so that data can never become someone else's.
 | Attachments | Only `content://` from other apps. `file://` and URIs from our own FileProvider/package are refused. Images are identified by their bytes, capped at 5 MiB, and copied into private storage immediately. |
 | Lock-screen-safe OTPs | Codes never appear on the lock screen. With "Hide OTPs" on (default) notifications are secret on the lock screen and omit the digits entirely. Copied codes are flagged sensitive (Android 13+). |
 | Screenshot blocking | `FLAG_SECURE` on OTP, finance and conversation screens when app lock or "Hide OTPs" is on. |
+| Backups you control | Backups are created only when you ask, encrypted with your password (PBKDF2-HMAC-SHA256, 310k iterations → AES-256-GCM, header authenticated), and saved only where you choose with the system file picker. The app never uploads them. |
+| Blocking & scam checks are local | Block lists, rules, and scam heuristics run on-device; there are no reputation lookups. |
 | Minimal exported surface | Only the main activity and the three components the SMS role needs are reachable by other apps, each guarded by a system-only permission. |
 
 ## Permissions and why
@@ -26,7 +28,9 @@ and login codes. These rules exist so that data can never become someone else's.
 - `RECEIVE_SMS`, `READ_SMS`, `SEND_SMS`, `RECEIVE_MMS`, `RECEIVE_WAP_PUSH` — required to act as
   the default SMS app.
 - `READ_CONTACTS` — show names instead of numbers; contacts are only read, never stored elsewhere.
-- `POST_NOTIFICATIONS` — local new-message / OTP notifications.
+- `POST_NOTIFICATIONS` — local new-message / OTP / bill notifications.
+- `READ_PHONE_STATE` — only to list active SIMs (slot + carrier label) for the dual-SIM picker.
+  Requested the first time you open the picker; phone numbers and device IDs are never read.
 
 Merged in by AndroidX libraries (harmless without network access):
 
@@ -53,8 +57,8 @@ $ANDROID_HOME/build-tools/35.0.0/aapt2 dump permissions app/build/outputs/apk/de
 
 ## Planned hardening
 
-- Biometric / device-credential app lock (setting exists; the lock screen itself is not built yet).
-- Persisting received SMS (receiver is still a stub), then MMS support under the same attachment rules.
+- MMS support under the same attachment rules.
 - A one-tap "wipe local data" action.
+- Optional backup-on-schedule to a local folder.
 
 See [SECURITY.md](../SECURITY.md) for the full control list and private vulnerability reporting.
